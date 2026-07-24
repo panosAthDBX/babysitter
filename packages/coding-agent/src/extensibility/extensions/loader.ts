@@ -5,13 +5,22 @@ import type * as fs1 from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
-import type { ImageContent, Model, TextContent, TSchema } from "@oh-my-pi/pi-ai";
+import type {
+	ImageContent,
+	Model,
+	ServiceTier,
+	ServiceTierByFamily,
+	ServiceTierFamily,
+	TextContent,
+	TSchema,
+} from "@oh-my-pi/pi-ai";
 import type { KeyId } from "@oh-my-pi/pi-tui";
 import { hasFsCode, isEacces, isEnoent, logger } from "@oh-my-pi/pi-utils";
 import { Type } from "arktype";
 import * as zodModule from "zod/v4";
 import { type ExtensionModule, extensionModuleCapability } from "../../capability/extension-module";
 import { type Hook, hookCapability } from "../../capability/hook";
+import { isServiceTierFamily, isServiceTierForFamily } from "../../config/service-tier";
 import { loadCapability } from "../../discovery";
 import { getExtensionNameFromPath } from "../../discovery/helpers";
 import type { ExecOptions } from "../../exec/exec";
@@ -24,7 +33,7 @@ import { installLegacyPiSpecifierShim, loadLegacyPiModule } from "../plugins/leg
 import { getAllPluginExtensionPaths } from "../plugins/loader";
 import * as TypeBox from "../typebox";
 
-import { resolvePath, withExitGuard } from "../utils";
+import { resolvePath, withHostGuard } from "../utils";
 import type {
 	AssistantThinkingRenderer,
 	Extension,
@@ -105,6 +114,14 @@ export class ExtensionRuntime implements IExtensionRuntime {
 	}
 
 	setThinkingLevel(): void {
+		throw new ExtensionRuntimeNotInitializedError();
+	}
+
+	getServiceTiers(): ServiceTierByFamily {
+		throw new ExtensionRuntimeNotInitializedError();
+	}
+
+	setServiceTier(): void {
 		throw new ExtensionRuntimeNotInitializedError();
 	}
 
@@ -257,6 +274,17 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 		this.runtime.setThinkingLevel(level, persist);
 	}
 
+	getServiceTiers(): Readonly<ServiceTierByFamily> {
+		return { ...this.runtime.getServiceTiers() };
+	}
+
+	setServiceTier(family: ServiceTierFamily, tier: ServiceTier | undefined): void {
+		if (!isServiceTierFamily(family) || (tier !== undefined && !isServiceTierForFamily(family, tier))) {
+			throw new TypeError(`Invalid service tier "${String(tier)}" for family "${String(family)}"`);
+		}
+		this.runtime.setServiceTier(family, tier);
+	}
+
 	getSessionName(): string | undefined {
 		return this.runtime.getSessionName();
 	}
@@ -266,7 +294,7 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 	}
 
 	setTodoProjection(namespace: string, phases: readonly TodoProjectionPhase[] | undefined): void {
-		this.runtime.setTodoProjection?.(namespace, phases);
+		this.runtime.setTodoProjection(namespace, phases);
 	}
 
 	registerProvider(name: string, config: ProviderConfig): void {
@@ -299,7 +327,7 @@ async function loadExtension(
 ): Promise<{ extension: Extension | null; error: string | null }> {
 	const resolvedPath = resolvePath(extensionPath, cwd);
 	try {
-		const module = (await withExitGuard(() => loadLegacyPiModule(resolvedPath))) as LoadedExtensionModule;
+		const module = (await withHostGuard(() => loadLegacyPiModule(resolvedPath))) as LoadedExtensionModule;
 		const factory = getExtensionFactory(module);
 
 		if (typeof factory !== "function") {
@@ -311,7 +339,7 @@ async function loadExtension(
 
 		const extension = createExtension(extensionPath, resolvedPath);
 		const api = new ConcreteExtensionAPI(PiCodingAgent, extension, runtime, cwd, eventBus);
-		await withExitGuard(async () => {
+		await withHostGuard(async () => {
 			await factory(api);
 		});
 

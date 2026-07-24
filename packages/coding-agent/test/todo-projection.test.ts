@@ -98,7 +98,7 @@ describe("todo projection integration", () => {
 			})),
 		}] as unknown as TodoProjectionPhase[]);
 
-		const rendered = Bun.stripANSI(renderTodoProjectionLines(store.snapshot()).join("\n"));
+		const rendered = Bun.stripANSI(renderTodoProjectionLines(store.snapshot(), 120).join("\n"));
 		expect(rendered.indexOf("alpha")).toBeLessThan(rendered.indexOf("zeta"));
 		for (const status of ["pending", "in_progress", "completed", "failed", "cancelled", "abandoned"]) {
 			expect(rendered).toContain(`task-${status}`);
@@ -106,6 +106,39 @@ describe("todo projection integration", () => {
 		expect(rendered).toContain("First effect");
 		expect(rendered).toContain("Second effect");
 		expect(rendered).not.toContain("must-not-render");
+	});
+
+	it("keeps tabs and newlines in extension-owned labels from injecting HUD rows", () => {
+		const store = new TodoProjectionStore();
+		store.set("owner\tname\nnamespace-injected", [{
+			id: "phase",
+			name: "phase\tname\nphase-injected",
+			tasks: [{ id: "task", content: "task\tcontent\ntask-injected", status: "in_progress" }],
+		}]);
+
+		const lines = renderTodoProjectionLines(store.snapshot(), 120).map(line => Bun.stripANSI(line));
+
+		expect(lines).toHaveLength(4);
+		expect(lines.every(line => !/[\t\r\n]/.test(line))).toBe(true);
+		expect(lines[1]).toContain("namespace-injected");
+		expect(lines[2]).toContain("phase-injected");
+		expect(lines[3]).toContain("task-injected");
+	});
+
+	it("truncates every extension-owned projected label to the available HUD width", () => {
+		const long = "x".repeat(200);
+		const store = new TodoProjectionStore();
+		store.set(`namespace-${long}`, [{
+			id: "phase",
+			name: `phase-${long}`,
+			tasks: [{ id: "task", content: `task-${long}`, status: "completed" }],
+		}]);
+
+		const lines = renderTodoProjectionLines(store.snapshot(), 24).map(line => Bun.stripANSI(line));
+
+		expect(lines).toHaveLength(4);
+		for (const line of lines.filter(Boolean)) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(24);
+		expect(lines.join("\n")).not.toContain(long);
 	});
 
 	it("keeps canonical todos and transcript entries isolated and clears on a new session", async () => {

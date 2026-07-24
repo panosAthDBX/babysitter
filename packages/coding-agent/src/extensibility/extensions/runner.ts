@@ -12,6 +12,7 @@ import type { MemoryRuntimeContext } from "../../memory-backend";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { SessionManager } from "../../session/session-manager";
 import type { BranchHandler, NavigateTreeHandler, NewSessionHandler } from "../session-handler-types";
+import { ManagedTimers } from "./managed-timers";
 import { createExtensionModelQuery } from "./model-api";
 import type {
 	AfterProviderResponseEvent,
@@ -70,6 +71,10 @@ export type ExtensionErrorListener = (error: ExtensionError) => void;
 
 export const EXTENSION_HANDLER_TIMEOUT_MS = 30_000;
 let extensionHandlerTimeoutMs = EXTENSION_HANDLER_TIMEOUT_MS;
+
+function throwUnsupportedServiceTierAction(): never {
+	throw new Error("This extension host does not support service-tier actions");
+}
 
 export function testSetExtensionHandlerTimeoutMs(timeoutMs: number): void {
 	extensionHandlerTimeoutMs = timeoutMs;
@@ -178,17 +183,22 @@ export type SwitchSessionHandler = (sessionPath: string) => Promise<{ cancelled:
 export type ShutdownHandler = () => void;
 
 /**
- * Helper function to emit session_shutdown event to extensions.
- * Returns true if the event was emitted, false if there were no handlers.
+ * Emit `session_shutdown` and clear timers owned by an extension runner.
+ *
+ * Returns whether any shutdown handlers were present. Timer cleanup runs even
+ * when a handler fails so extension background work cannot outlive its host.
  */
 export async function emitSessionShutdownEvent(extensionRunner: ExtensionRunner | undefined): Promise<boolean> {
-	if (extensionRunner?.hasHandlers("session_shutdown")) {
+	if (!extensionRunner) return false;
+	try {
+		if (!extensionRunner.hasHandlers("session_shutdown")) return false;
 		await extensionRunner.emit({
 			type: "session_shutdown",
 		});
 		return true;
+	} finally {
+		extensionRunner.clearManagedTimers();
 	}
-	return false;
 }
 
 const noOpUIContext: ExtensionUIContext = {
@@ -249,6 +259,18 @@ export class ExtensionRunner {
 	 */
 	#pendingCredentialDisabled: CredentialDisabledEvent[] = [];
 
+	/**
+	 * Timers scheduled by extensions through the sanctioned `ctx.setInterval` /
+	 * `ctx.setTimeout` helpers. Callbacks run with the same isolation as handler
+	 * dispatch — a throw is logged and routed through {@link onError} instead of
+	 * escaping to the process `uncaughtException` handler and tearing down the
+	 * whole session (issue #5664). Handles are `unref`'d and every outstanding
+	 * timer is cleared on session teardown via {@link clearManagedTimers}.
+	 */
+	#managedTimers = new ManagedTimers((event, error, stack) =>
+		this.emitError({ extensionPath: "<timer>", event, error, stack }),
+	);
+
 	constructor(
 		private readonly extensions: Extension[],
 		private readonly runtime: ExtensionRuntime,
@@ -280,9 +302,11 @@ export class ExtensionRunner {
 		this.runtime.setModel = actions.setModel;
 		this.runtime.getThinkingLevel = actions.getThinkingLevel;
 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
+		this.runtime.getServiceTiers = actions.getServiceTiers ?? throwUnsupportedServiceTierAction;
+		this.runtime.setServiceTier = actions.setServiceTier ?? throwUnsupportedServiceTierAction;
 		this.runtime.getSessionName = actions.getSessionName;
 		this.runtime.setSessionName = actions.setSessionName;
-		if (actions.setTodoProjection) this.runtime.setTodoProjection = actions.setTodoProjection;
+		this.runtime.setTodoProjection = actions.setTodoProjection;
 
 		// Context actions (required)
 		this.#getModel = contextActions.getModel;
@@ -522,8 +546,9 @@ export class ExtensionRunner {
 		return undefined;
 	}
 
-	createContext(): ExtensionContext {
-		const getModel = this.#getModel;
+	/** Creates an extension context, optionally scoped to a provider request model. */
+	createContext(model?: Model): ExtensionContext {
+		const getModel = model ? () => model : this.#getModel;
 		return {
 			ui: this.#uiContext,
 			getContextUsage: () => this.#getContextUsageFn(),
@@ -543,6 +568,9 @@ export class ExtensionRunner {
 			getSystemPrompt: () => this.#getSystemPromptFn(),
 			localProtocolOptions: this.localProtocolOptions,
 			memory: this.#getMemoryFn?.(),
+			setInterval: (callback, ms, ...args) => this.#managedTimers.setInterval(callback, ms, ...args),
+			setTimeout: (callback, ms, ...args) => this.#managedTimers.setTimeout(callback, ms, ...args),
+			clearTimer: timer => this.#managedTimers.clear(timer),
 		};
 	}
 
@@ -551,6 +579,16 @@ export class ExtensionRunner {
 	 */
 	shutdown(): void {
 		this.#shutdownHandler();
+	}
+
+	/**
+	 * Clear every timer scheduled through `ctx.setInterval` / `ctx.setTimeout`.
+	 * Called during session teardown so extension background work does not
+	 * outlive the session (a self-scheduling interval would otherwise keep
+	 * firing against a disposed session).
+	 */
+	clearManagedTimers(): void {
+		this.#managedTimers.clearAll();
 	}
 
 	createCommandContext(): ExtensionCommandContext {
@@ -940,8 +978,9 @@ export class ExtensionRunner {
 		return currentMessages;
 	}
 
-	async emitBeforeProviderRequest(payload: unknown): Promise<BeforeProviderRequestEventResult> {
-		const ctx = this.createContext();
+	/** Runs request payload hooks with the model used for that provider request. */
+	async emitBeforeProviderRequest(payload: unknown, model?: Model): Promise<BeforeProviderRequestEventResult> {
+		const ctx = this.createContext(model);
 		let currentPayload = payload;
 
 		for (const ext of this.extensions) {

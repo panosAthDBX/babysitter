@@ -196,10 +196,12 @@ describe("normalizeSchemaForGoogle", () => {
 		expect(items.enum).toEqual(["only"]);
 	});
 
-	it("passes through primitives unchanged", () => {
+	it("passes through non-boolean primitives and coerces boolean schemas", () => {
 		expect(normalizeSchemaForGoogle("string")).toBe("string");
 		expect(normalizeSchemaForGoogle(123)).toBe(123);
-		expect(normalizeSchemaForGoogle(true)).toBe(true);
+		// Google's wire cannot encode JSON Schema boolean subschemas; `true`
+		// (accept anything) coerces to the equivalent empty schema.
+		expect(normalizeSchemaForGoogle(true)).toEqual({});
 		expect(normalizeSchemaForGoogle(null)).toBe(null);
 	});
 
@@ -272,9 +274,9 @@ describe("tool schema validation (post-sanitization)", () => {
 	it("hidden tools also have valid sanitized schemas", async () => {
 		const session = createTestSession();
 
-		for (const name in HIDDEN_TOOLS) {
-			if (!Object.hasOwn(HIDDEN_TOOLS, name)) continue;
-			const tool = await HIDDEN_TOOLS[name](session);
+		// Object.entries keeps the factory typed without an index cast.
+		for (const [name, factory] of Object.entries(HIDDEN_TOOLS)) {
+			const tool = await factory(session);
 			if (!tool) continue;
 
 			const schema = tool.parameters;

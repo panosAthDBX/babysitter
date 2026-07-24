@@ -3,7 +3,8 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Process, type PtyRunResult, PtySession } from "@oh-my-pi/pi-natives";
-import { isEexist, isEnoent, logger, postmortem, sanitizeText } from "@oh-my-pi/pi-utils";
+import { isEexist, isEnoent, logger, postmortem, procmgr, sanitizeText } from "@oh-my-pi/pi-utils";
+import { hostHasInheritableConsole } from "../eval/py/spawn-options";
 import { truncateHead, truncateHeadBytes, truncateTail, truncateTailBytes } from "../session/streaming-output";
 import { workerEnvFromParent } from "../subprocess/worker-client";
 import { daemonBrokerEndpoint } from "./paths";
@@ -24,6 +25,7 @@ import {
 	parseDaemonSpec,
 	parseDaemonWireRequest,
 } from "./protocol";
+import { resolveDaemonSpawnOptions } from "./spawn-options";
 
 const DEFAULT_IDLE_GRACE_MS = 3_000;
 const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -31,11 +33,21 @@ const MAX_LOG_BYTES = 25 * 1024 * 1024;
 const LOG_READ_BYTES = 2 * 1024 * 1024;
 const READINESS_BUFFER_CHARS = 64 * 1024;
 const RESTART_MAX_DELAY_MS = 30_000;
+/**
+ * Cap on terminal (exited/failed) daemons surfaced by `list`. Active daemons
+ * are always shown in full; older history is truncated so the response stays
+ * bounded over a long-lived project (issue #6517).
+ */
+const MAX_TERMINAL_DAEMONS_LISTED = 10;
 const TOKEN_FILE = "broker.token";
 const PID_FILE = "broker.pid";
 const META_FILE = "meta.json";
 const LOG_FILE = "output.log";
 const PREVIOUS_LOG_FILE = "output.previous.log";
+const DAEMON_SPAWN_OPTIONS = resolveDaemonSpawnOptions({
+	platform: process.platform,
+	hostHasInheritableConsole: hostHasInheritableConsole(),
+});
 
 const SIGNAL_NUMBER: Record<DaemonSignal, number> = {
 	SIGINT: os.constants.signals.SIGINT,
@@ -87,6 +99,41 @@ function quoteShellArg(value: string): string {
 
 function terminalState(state: DaemonSnapshot["state"]): boolean {
 	return state === "exited" || state === "failed";
+}
+
+/**
+ * Order daemons for the `list` response: non-terminal (active) daemons first,
+ * oldest to newest, so the process the user is acting on is immediately visible
+ * instead of buried behind exited history; then the most recently exited/failed
+ * ones, capped at {@link MAX_TERMINAL_DAEMONS_LISTED} to keep the response from
+ * growing without bound. Truncated terminal records stay addressable by name
+ * via `describe`/`logs`/`restart`.
+ */
+function orderDaemonsForListing(snapshots: DaemonSnapshot[]): DaemonSnapshot[] {
+	const active: DaemonSnapshot[] = [];
+	const terminal: DaemonSnapshot[] = [];
+	for (const snapshot of snapshots) {
+		(terminalState(snapshot.state) ? terminal : active).push(snapshot);
+	}
+	active.sort((left, right) => left.createdAt - right.createdAt);
+	terminal.sort((left, right) => (right.exitedAt ?? right.createdAt) - (left.exitedAt ?? left.createdAt));
+	return [...active, ...terminal.slice(0, MAX_TERMINAL_DAEMONS_LISTED)];
+}
+
+/**
+ * Reap a recovered non-detached daemon snapshot in place. Already-terminal
+ * records are left untouched so `list` keeps their real {@link DaemonSnapshot.exitedAt}
+ * for recency ranking; records that were still alive when the previous broker
+ * exited are marked `exited` at `now`, since their process died with that broker
+ * (issue #6517). Returns whether the record was reaped.
+ */
+function reapRecoveredSnapshot(snapshot: DaemonSnapshot, now: number): boolean {
+	if (terminalState(snapshot.state)) return false;
+	snapshot.pid = undefined;
+	snapshot.state = "exited";
+	snapshot.exitedAt = now;
+	snapshot.exitReason = "previous broker exited";
+	return true;
 }
 
 /** Mirror per-condition readiness progress into the snapshot so clients can see which condition is unmet. */
@@ -396,9 +443,7 @@ class DaemonBroker {
 				await Promise.all([...this.#records.values()].map(record => this.#refreshDetached(record)));
 				return {
 					op: "list",
-					daemons: [...this.#records.values()]
-						.sort((left, right) => left.snapshot.createdAt - right.snapshot.createdAt)
-						.map(record => record.snapshot),
+					daemons: orderDaemonsForListing([...this.#records.values()].map(record => record.snapshot)),
 				};
 			}
 			case "logs":
@@ -485,8 +530,17 @@ class DaemonBroker {
 		await this.#launch(record);
 		let readyTimedOut = false;
 		if (spec.ready && !terminalState(record.snapshot.state)) {
-			const ready = await this.#waitUntil(record, () => record.snapshot.state === "ready", spec.ready.timeoutMs);
-			readyTimedOut = !ready && !terminalState(record.snapshot.state);
+			// Wake on the sticky readyAt marker or any terminal state, not the live
+			// state: a fast process flips starting→ready→exited within one poll
+			// interval, so sampling `state === "ready"` never observes readiness even
+			// though #markReady durably recorded readyAt. A pre-ready exit must also
+			// wake the wait rather than block for the full timeout.
+			const ready = await this.#waitUntil(
+				record,
+				() => record.snapshot.readyAt !== undefined || terminalState(record.snapshot.state),
+				spec.ready.timeoutMs,
+			);
+			readyTimedOut = !ready;
 		}
 		await record.persistQueue;
 		return { op: "start", daemon: record.snapshot, readyTimedOut };
@@ -537,6 +591,15 @@ class DaemonBroker {
 			if (error) record.log?.append(`PTY output error: ${error.message}\n`);
 			if (chunk) this.#onOutput(record, generation, chunk);
 		};
+		const started = Promise.withResolvers<number | undefined>();
+		const onStart = (error: Error | null, pid: number): void => {
+			if (error) {
+				record.log?.append(`PTY startup callback failed: ${error.message}\n`);
+				started.resolve(undefined);
+				return;
+			}
+			started.resolve(Number.isSafeInteger(pid) && pid > 0 ? pid : undefined);
+		};
 		let run: Promise<PtyRunResult>;
 		if (process.platform === "win32") {
 			run = session.startArgv(
@@ -546,40 +609,29 @@ class DaemonBroker {
 					...options,
 				},
 				onChunk,
+				onStart,
 			);
 		} else {
-			const pidPath = path.join(record.dir, "process.pid");
-			await fs.rm(pidPath, { force: true });
 			const argv = [record.spec.application, ...record.spec.args];
-			const command = [
-				`printf '%s' "$$" > ${quoteShellArg(pidPath)}`,
-				`exec ${argv.map(quoteShellArg).join(" ")}`,
-			].join("; ");
-			run = session.start({ command, shell: process.env.SHELL, ...options }, onChunk);
+			const command = `exec ${argv.map(quoteShellArg).join(" ")}`;
+			const shell = procmgr.getShellConfig().shell;
+			run = session.start({ command, shell, ...options }, onChunk, onStart);
 		}
-		void run
-			.then(result => this.#onPtyExit(record, generation, result))
-			.catch(error =>
-				this.#settle(record, generation, undefined, error instanceof Error ? error.message : String(error)),
-			);
+		void run.then(
+			async result => {
+				await this.#onPtyExit(record, generation, result);
+				started.resolve(undefined);
+			},
+			async error => {
+				await this.#settle(record, generation, undefined, error instanceof Error ? error.message : String(error));
+				started.resolve(undefined);
+			},
+		);
 
-		if (process.platform === "win32") return;
-		const pidPath = path.join(record.dir, "process.pid");
-		const deadline = Date.now() + 5_000;
-		const pidFile = Bun.file(pidPath);
-		while (Date.now() < deadline && generation === record.generation) {
-			try {
-				const pid = Number.parseInt((await pidFile.text()).trim(), 10);
-				if (Number.isSafeInteger(pid) && pid > 0) {
-					record.snapshot.pid = pid;
-					this.#persist(record);
-					return;
-				}
-			} catch (error) {
-				if (!isEnoent(error)) throw error;
-			}
-			if (terminalState(record.snapshot.state)) return;
-			await Bun.sleep(20);
+		const pid = await started.promise;
+		if (pid !== undefined && generation === record.generation) {
+			record.snapshot.pid = pid;
+			this.#persist(record);
 		}
 	}
 
@@ -590,7 +642,7 @@ class DaemonBroker {
 			stdin: "pipe",
 			stdout: "pipe",
 			stderr: "pipe",
-			detached: true,
+			...DAEMON_SPAWN_OPTIONS,
 		});
 		record.process = process;
 		record.input = process.stdin;
@@ -613,7 +665,7 @@ class DaemonBroker {
 				cwd: record.spec.cwd,
 				env: workerEnvFromParent(record.spec.env),
 				stdio: ["ignore", output.fd, output.fd],
-				detached: true,
+				...DAEMON_SPAWN_OPTIONS,
 			});
 			record.process = process;
 			record.snapshot.pid = process.pid;
@@ -744,6 +796,11 @@ class DaemonBroker {
 			const uptime = Date.now() - record.snapshot.startedAt;
 			record.consecutiveFailures = uptime >= 30_000 ? 0 : record.consecutiveFailures + 1;
 			record.snapshot.restartCount++;
+			// Readiness belongs to the exited generation; clear it before the backoff
+			// so start / for:"ready" waits don't treat a dead service as ready during
+			// the restart window (readyAt is re-set by #launch once the child is up).
+			record.snapshot.readyAt = undefined;
+			record.snapshot.readyMatch = undefined;
 			record.snapshot.state = "restarting";
 			const delay = Math.min(1_000 * 2 ** Math.min(record.consecutiveFailures, 5), RESTART_MAX_DELAY_MS);
 			record.log?.append(
@@ -808,6 +865,12 @@ class DaemonBroker {
 				throw new Error(`Invalid wait regex: ${error instanceof Error ? error.message : String(error)}`);
 			}
 		}
+		// Readiness was actually observed: the sticky readyAt survives a fast
+		// ready→exit, a live "ready" state, or a "running" daemon with no ready spec.
+		const readyObserved = (): boolean =>
+			record.snapshot.readyAt !== undefined ||
+			record.snapshot.state === "ready" ||
+			(record.snapshot.state === "running" && !record.spec.ready);
 		const condition = (): boolean => {
 			if (pattern) {
 				const match = pattern.exec(record.readinessBuffer);
@@ -816,10 +879,16 @@ class DaemonBroker {
 				return true;
 			}
 			if (operation.for === "exit") return terminalState(record.snapshot.state);
-			return record.snapshot.state === "ready" || (record.snapshot.state === "running" && !record.spec.ready);
+			// Wake on observed readiness or any terminal state so the wait never
+			// blocks for the full timeout; success is judged by readyObserved below.
+			return readyObserved() || terminalState(record.snapshot.state);
 		};
-		const reached = condition() || (await this.#waitUntil(record, condition, operation.timeoutMs));
-		return { op: "wait", daemon: record.snapshot, matched, timedOut: !reached };
+		const woke = condition() || (await this.#waitUntil(record, condition, operation.timeoutMs));
+		// A for:"ready" wait that woke on a terminal exit without ever observing
+		// readiness is still "not ready" — surface it as timed out so callers and the
+		// renderer don't chain work against a dead process.
+		const timedOut = operation.for === "ready" && !pattern ? !readyObserved() : !woke;
+		return { op: "wait", daemon: record.snapshot, matched, timedOut };
 	}
 
 	async #send(operation: Extract<DaemonOperation, { op: "send" }>): Promise<DaemonRpcResult> {
@@ -943,11 +1012,13 @@ class DaemonBroker {
 					snapshot.state !== "stopping" &&
 					processRef?.status() === "running";
 				if (!detached) {
-					if (processRef) await processRef.terminate({ group: true, gracefulMs: 500, timeoutMs: 2_000 });
-					snapshot.pid = undefined;
-					snapshot.state = "exited";
-					snapshot.exitedAt = Date.now();
-					snapshot.exitReason = "previous broker exited";
+					// Reap only records that were still alive when the previous broker
+					// exited; already-terminal records keep their real exit time so
+					// `list` ranks exited history by true recency (issue #6517).
+					if (!terminalState(snapshot.state) && processRef) {
+						await processRef.terminate({ group: true, gracefulMs: 500, timeoutMs: 2_000 });
+					}
+					reapRecoveredSnapshot(snapshot, Date.now());
 				} else if (snapshot.state === "restarting") {
 					snapshot.state = spec.ready ? "starting" : "running";
 				}

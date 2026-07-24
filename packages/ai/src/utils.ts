@@ -1,5 +1,6 @@
 import { $env } from "@oh-my-pi/pi-utils";
 import type { ResponseInput, ResponseInputItem } from "./providers/openai-responses-wire";
+import { redactSensitiveCredentials } from "./providers/transform-messages";
 import type { CacheRetention, OpenAIResponsesHistoryPayload, ProviderPayload } from "./types";
 
 type OpenAIResponsesReplayItem = ResponseInput[number];
@@ -9,7 +10,9 @@ export { isRecord } from "@oh-my-pi/pi-utils";
 export function normalizeSystemPrompts(systemPrompt: readonly string[] | string | undefined | null): string[] {
 	if (systemPrompt === undefined || systemPrompt === null) return [];
 	const prompts = Array.isArray(systemPrompt) ? systemPrompt : typeof systemPrompt === "string" ? [systemPrompt] : [];
-	return prompts.map(prompt => prompt.toWellFormed()).filter(prompt => prompt.trim().length > 0);
+	return prompts
+		.map(prompt => redactSensitiveCredentials(prompt.toWellFormed()))
+		.filter(prompt => prompt.trim().length > 0);
 }
 
 export function normalizeToolCallId(id: string): string {
@@ -200,8 +203,10 @@ function sanitizeOpenAIResponsesHistoryItemForReplay(
 	if (item.type === "image_generation_call") return sanitizeOpenAIResponsesImageGenerationCallForReplay(item);
 	if (item.type === "reasoning") return sanitizeOpenAIResponsesReasoningItemForReplay(item);
 
-	// providerPayload stores raw output items; replay strips item ids and keeps only normalized call_id.
+	// Provider payload stores raw output items. Computer calls retain their stable
+	// provider item ID; other replay items strip IDs and normalize call_id.
 	const { id: _id, ...sanitizedItem } = item;
+	if (item.type === "computer_call" && typeof item.id === "string") sanitizedItem.id = item.id;
 	if (typeof item.call_id === "string") {
 		sanitizedItem.call_id = normalizeReplayedResponsesHistoryCallId(item.call_id, normalizedCallIds);
 	}
@@ -268,10 +273,8 @@ export function getOpenAIResponsesHistoryPayload(
 	if (providerPayload?.type !== "openaiResponsesHistory" || !Array.isArray(providerPayload.items)) {
 		return undefined;
 	}
-	const payloadProvider = providerPayload.provider ?? fallbackProvider;
-	if (!payloadProvider || payloadProvider !== currentProvider) {
-		return undefined;
-	}
+	const payloadProvider = providerPayload.provider ?? fallbackProvider ?? currentProvider;
+	if (payloadProvider !== currentProvider) return undefined;
 	return { ...providerPayload, provider: payloadProvider };
 }
 
@@ -284,11 +287,16 @@ export function getOpenAIResponsesHistoryItems(
 }
 
 /**
- * Resolve cache retention preference.
- * Defaults to "short" and uses PI_CACHE_RETENTION for backward compatibility.
+ * Resolve cache retention preference: explicit request option first, then the
+ * `PI_CACHE_RETENTION` env override (`long` | `short` | `none`), then the
+ * provider-supplied fallback.
  */
-export function resolveCacheRetention(cacheRetention?: CacheRetention): CacheRetention {
+export function resolveCacheRetention(
+	cacheRetention?: CacheRetention,
+	fallback: CacheRetention = "short",
+): CacheRetention {
 	if (cacheRetention) return cacheRetention;
-	if ($env.PI_CACHE_RETENTION === "long") return "long";
-	return "short";
+	const env = $env.PI_CACHE_RETENTION;
+	if (env === "long" || env === "short" || env === "none") return env;
+	return fallback;
 }

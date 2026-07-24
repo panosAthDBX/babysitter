@@ -2,6 +2,76 @@
 
 ## [Unreleased]
 
+## [17.1.2] - 2026-07-24
+
+### Added
+
+- Added `resolveFallbackTool` option to allow routing unadvertised tool calls to host-side transports (e.g., device mounts)
+
+## [17.1.1] - 2026-07-24
+
+### Added
+
+- Added the provider-neutral native computer-call lifecycle, preserving observation outputs and input actions across pending and acknowledged tool results.
+
+### Changed
+
+- Queued steering no longer hard-aborts non-interruptible tools (e.g. `bash`): it aborts interruptible waits only and raises a cooperative steering signal (`ToolCallContext.steeringSignal`) that long-running tools may observe to finish early or background themselves. The mid-batch steering/IRC watch now runs for every tool batch instead of only batches containing an interruptible tool.
+
+## [17.1.0] - 2026-07-24
+
+### Added
+
+- Added support for tracking Cloudflare AI Gateway cache status (hit, miss, bypass, unknown) on chat spans.
+
+### Changed
+
+- Improved tool execution steering behavior: queued steering now cooperatively signals long-running, non-interruptible tools (via ToolCallContext.steeringSignal) to allow graceful early termination or backgrounding, rather than hard-aborting them.
+
+### Fixed
+
+- Fixed an out-of-memory (OOM) crash caused by an infinite loop when a steer or follow-up message was queued on an agent session with an empty transcript.
+- Fixed an issue where switching providers or models on a session could lose compacted history; the agent now correctly falls back to a portable local summary if the new model cannot replay the prior provider's remote-compaction payload.
+- Fixed a compaction failure with Anthropic models where serializing prior assistant reasoning inside <thinking> tags triggered reasoning_extraction refusals.
+
+## [17.0.8] - 2026-07-22
+
+### Fixed
+
+- Improved resilience against transient stream JSON parse failures by recovering completed tool calls while safely preventing incomplete, unknown, refused, or sensitive calls from executing.
+
+## [17.0.5] - 2026-07-18
+
+### Added
+
+- Added a per-message token estimation cache to optimize performance by reusing token counts for settled message history, with automatic cache invalidation on message mutation.
+
+### Changed
+
+- Improved tool execution control by making tool interruptibility resolvable per call, allowing side-effecting operations to complete while passive waits can yield to queued steering.
+
+## [17.0.2] - 2026-07-17
+
+### Fixed
+
+- Improved error visibility in interactive clients by surfacing provider stream failures through the assistant message lifecycle, preventing silent loading spinners.
+- Fixed an issue where Cursor provider contexts omitted host-supplied MCP tools from main and side-channel requests.
+
+## [17.0.0] - 2026-07-15
+
+### Breaking Changes
+
+- Replaced the irc, job, and launch tools with a unified hub tool.
+- Removed the tool discovery system (including the search-tool-bm25 tool) and its associated configuration settings (tools.discoveryMode, tools.essentialOverride, mcp.discoveryMode, and mcp.discoveryDefaultServers).
+- Removed the resolve tool; plan approval and preview actions now use writes to the xd://propose virtual device path.
+
+### Added
+
+- Introduced the xd:// virtual device protocol for mounting tools as URLs readable/writable via read/write tools, configurable via the new tools.xdev setting (defaults to true).
+- Added the hub tool, consolidating agent peer messaging, background job control, and supervised long-running processes.
+- Added the edit.enforceSeenLines configuration setting (defaults to false) to optionally reject edits on lines that have not been fully displayed.
+- Added the ToolLoadMode type and an optional satisfies predicate to SoftToolRequirement to support compliance checks against specific invocation shapes (such as writing to a virtual device path).
+
 ## [16.5.2] - 2026-07-14
 
 ### Fixed
