@@ -5,6 +5,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -14,6 +15,8 @@ import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import type { NativeScrollbackLiveRegion } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
+const FOCUSED_AGENT_ID = "TodoProjectionFocusedWorker";
+
 function renderTodos(mode: InteractiveMode): string {
 	return Bun.stripANSI(mode.todoContainer.render(120).join("\n"));
 }
@@ -21,6 +24,8 @@ function renderTodos(mode: InteractiveMode): string {
 describe("InteractiveMode todo HUD persistence", () => {
 	let tempDir: TempDir;
 	let authStorage: AuthStorage;
+	let modelRegistry: ModelRegistry;
+	let focusedSession: AgentSession | undefined;
 	let session: AgentSession;
 	let mode: InteractiveMode;
 	let eventBus: EventBus;
@@ -32,10 +37,13 @@ describe("InteractiveMode todo HUD persistence", () => {
 	beforeEach(async () => {
 		resetSettingsForTest();
 		tempDir = TempDir.createSync("@pi-todo-clear-");
+		focusedSession = undefined;
 	});
 
 	afterEach(async () => {
 		mode?.stop();
+		AgentRegistry.global().unregister(FOCUSED_AGENT_ID);
+		await focusedSession?.dispose();
 		await session?.dispose();
 		authStorage?.close();
 		tempDir?.removeSync();
@@ -51,7 +59,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 			overrides: { "tasks.todoClearDelay": todoClearDelay },
 		});
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
-		const modelRegistry = new ModelRegistry(authStorage);
+		modelRegistry = new ModelRegistry(authStorage);
 		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected claude-sonnet-4-5 to exist in registry");
 
@@ -123,6 +131,55 @@ describe("InteractiveMode todo HUD persistence", () => {
 
 		mode.setTodos([]);
 		expect(liveRegion.getNativeScrollbackLiveRegionStart?.()).toBeUndefined();
+	});
+
+	it("renders projection changes from the session focused through Agent Hub", async () => {
+		await createMode(-1);
+		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+		await mode.init();
+		session.setTodoProjection("main-projection", [{
+			id: "main-phase",
+			name: "Main phase",
+			tasks: [{ id: "main-task", content: "Main task", status: "in_progress" }],
+		}]);
+		mode.refreshTodoProjections();
+		expect(renderTodos(mode)).toContain("main-projection");
+
+		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected claude-sonnet-4-5 to exist in registry");
+		focusedSession = new AgentSession({
+			agent: new Agent({
+				initialState: {
+					model,
+					systemPrompt: ["Focused test"],
+					tools: [],
+					messages: [],
+				},
+			}),
+			sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
+			settings: Settings.isolated({ "tasks.todoClearDelay": -1 }),
+			modelRegistry,
+		});
+		AgentRegistry.global().register({
+			id: FOCUSED_AGENT_ID,
+			displayName: FOCUSED_AGENT_ID,
+			kind: "sub",
+			parentId: "Main",
+			session: focusedSession,
+			sessionFile: null,
+			status: "running",
+		});
+
+		await mode.focusAgentSession(FOCUSED_AGENT_ID);
+		focusedSession.setTodoProjection("focused-projection", [{
+			id: "focused-phase",
+			name: "Focused phase",
+			tasks: [{ id: "focused-task", content: "Focused task", status: "in_progress" }],
+		}]);
+
+		expect(renderTodos(mode)).toContain("focused-projection");
+		expect(renderTodos(mode)).toContain("Focused task");
+		expect(renderTodos(mode)).not.toContain("main-projection");
 	});
 
 	it("marks todos complete when subagent reconciliation reports a finished agent", async () => {

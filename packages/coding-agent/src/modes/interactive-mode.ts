@@ -49,6 +49,7 @@ import {
 	logger,
 	postmortem,
 	prompt,
+	sanitizeText,
 	setProjectDir,
 } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
@@ -435,10 +436,10 @@ export function renderTodoProjectionLines(
 	columns: number,
 ): string[] {
 	const checkbox = theme.checkbox;
-	const sanitizeText = (value: string, maxWidth: number): string =>
-		truncateToWidth(replaceTabs(value).replace(/[\r\n]+/g, " "), Math.max(1, maxWidth));
+	const formatProjectionText = (value: string, maxWidth: number): string =>
+		truncateToWidth(replaceTabs(sanitizeText(value)).replace(/[\r\n]+/g, " "), Math.max(1, maxWidth));
 	const formatTask = (task: TodoProjectionItem): string => {
-		const content = sanitizeText(
+		const content = formatProjectionText(
 			task.content,
 			Math.min(TRUNCATE_LENGTHS.CONTENT, columns - 3 - visibleWidth(`${checkbox.unchecked} `)),
 		);
@@ -459,13 +460,13 @@ export function renderTodoProjectionLines(
 	};
 	const lines: string[] = [];
 	for (const projection of projections) {
-		const namespace = sanitizeText(projection.namespace, Math.min(TRUNCATE_LENGTHS.TITLE, columns));
+		const namespace = formatProjectionText(projection.namespace, Math.min(TRUNCATE_LENGTHS.TITLE, columns));
 		lines.push("", theme.bold(theme.fg("accent", namespace)));
 		for (const phase of projection.phases) {
 			if (phase.tasks.length === 0) continue;
 			const done = phase.tasks.filter(task => task.status === "completed").length;
 			const progress = ` · ${done}/${phase.tasks.length}`;
-			const phaseName = sanitizeText(
+			const phaseName = formatProjectionText(
 				phase.name,
 				Math.min(TRUNCATE_LENGTHS.TITLE, columns - 1 - visibleWidth(progress)),
 			);
@@ -2093,7 +2094,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#renderTodoList(): void {
 		this.todoContainer.clear();
 		const phases = this.todoPhases.filter(phase => phase.tasks.length > 0);
-		const projections = this.session.getTodoProjections().filter(projection =>
+		const projections = this.viewSession.getTodoProjections().filter(projection =>
 			projection.phases.some(phase => phase.tasks.length > 0),
 		);
 		if (phases.length === 0) {

@@ -108,18 +108,27 @@ describe("todo projection integration", () => {
 		expect(rendered).not.toContain("must-not-render");
 	});
 
-	it("keeps tabs and newlines in extension-owned labels from injecting HUD rows", () => {
+	it("sanitizes ANSI, control bytes, tabs, and newlines in extension-owned labels", () => {
 		const store = new TodoProjectionStore();
-		store.set("owner\tname\nnamespace-injected", [{
+		store.set("owner\x1b[2J\tname\nnamespace-injected\u0007", [{
 			id: "phase",
-			name: "phase\tname\nphase-injected",
-			tasks: [{ id: "task", content: "task\tcontent\ntask-injected", status: "in_progress" }],
+			name: "phase\x1b]0;owned\u0007\tname\nphase-injected\u009b",
+			tasks: [{
+				id: "task",
+				content: "task\x1b[31m\tcontent\x1b[0m\ntask-injected\u0000",
+				status: "in_progress",
+			}],
 		}]);
 
-		const lines = renderTodoProjectionLines(store.snapshot(), 120).map(line => Bun.stripANSI(line));
+		const renderedLines = renderTodoProjectionLines(store.snapshot(), 120);
+		const rendered = renderedLines.join("\n");
+		const lines = renderedLines.map(line => Bun.stripANSI(line));
 
 		expect(lines).toHaveLength(4);
-		expect(lines.every(line => !/[\t\r\n]/.test(line))).toBe(true);
+		expect(lines.every(line => !/[\t\r\n\x00-\x08\x0B-\x1F\x7F-\x9F]/.test(line))).toBe(true);
+		expect(rendered).not.toContain("\x1b[2J");
+		expect(rendered).not.toContain("\x1b]0;owned");
+		expect(rendered).not.toContain("\x1b[31m");
 		expect(lines[1]).toContain("namespace-injected");
 		expect(lines[2]).toContain("phase-injected");
 		expect(lines[3]).toContain("task-injected");
