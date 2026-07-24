@@ -2302,6 +2302,7 @@ export class AcpAgent implements Agent {
 				setSessionName: async name => {
 					await record.session.sessionManager.setSessionName(name, "user");
 				},
+				setTodoProjection: (namespace, phases) => record.session.setTodoProjection(namespace, phases),
 			},
 			{
 				getModel: () => record.session.model,

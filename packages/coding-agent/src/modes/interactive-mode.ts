@@ -68,6 +68,10 @@ import type {
 	ExtensionWidgetContent,
 	ExtensionWidgetOptions,
 } from "../extensibility/extensions";
+import type {
+	NamespacedTodoProjection,
+	TodoProjectionItem,
+} from "../extensibility/extensions/todo-projection";
 import type { CompactOptions } from "../extensibility/extensions/types";
 import type { Skill } from "../extensibility/skills";
 import { loadSlashCommands } from "../extensibility/slash-commands";
@@ -401,6 +405,38 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 		rows.push(theme.fg("dim", `… ${hiddenCount} more running — open Agent Hub for full list`));
 	}
 	return ["", theme.bold(theme.fg("accent", "Subagents")), ...rows.map(line => ` ${line}`)];
+}
+
+/** Format allowlisted projection fields for the anchored interactive todo HUD. */
+export function renderTodoProjectionLines(projections: readonly NamespacedTodoProjection[]): string[] {
+	const checkbox = theme.checkbox;
+	const formatTask = (task: TodoProjectionItem): string => {
+		switch (task.status) {
+			case "in_progress":
+				return theme.fg("accent", `${checkbox.unchecked} ${task.content}`);
+			case "completed":
+				return theme.fg("success", `${checkbox.checked} ${chalk.strikethrough(task.content)}`);
+			case "failed":
+				return theme.fg("error", `× ${task.content}`);
+			case "cancelled":
+				return theme.fg("error", `− ${chalk.strikethrough(task.content)}`);
+			case "abandoned":
+				return theme.fg("dim", `− ${chalk.strikethrough(task.content)}`);
+			default:
+				return theme.fg("dim", `${checkbox.unchecked} ${task.content}`);
+		}
+	};
+	const lines: string[] = [];
+	for (const projection of projections) {
+		lines.push("", theme.bold(theme.fg("accent", projection.namespace)));
+		for (const phase of projection.phases) {
+			if (phase.tasks.length === 0) continue;
+			const done = phase.tasks.filter(task => task.status === "completed").length;
+			lines.push(` ${theme.fg("muted", phase.name)}${theme.fg("dim", ` · ${done}/${phase.tasks.length}`)}`);
+			for (const task of phase.tasks) lines.push(`   ${formatTask(task)}`);
+		}
+	}
+	return lines;
 }
 
 export class InteractiveMode implements InteractiveModeContext {
@@ -1841,10 +1877,18 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#observerUiSyncNeedsTodoReconcile = false;
 	}
 
+
 	#renderTodoList(): void {
 		this.todoContainer.clear();
 		const phases = this.todoPhases.filter(phase => phase.tasks.length > 0);
-		if (phases.length === 0) return;
+		const projections = this.session.getTodoProjections().filter(projection =>
+			projection.phases.some(phase => phase.tasks.length > 0),
+		);
+		if (phases.length === 0) {
+			const projectionLines = renderTodoProjectionLines(projections);
+			if (projectionLines.length > 0) this.todoContainer.addChild(new Text(projectionLines.join("\n"), 1, 0));
+			return;
+		}
 		const expanded = this.todoExpanded;
 		const multiPhase = phases.length > 1;
 		const activeIdx = phases.indexOf(this.#getActivePhase(phases) ?? phases[0]);
@@ -1904,7 +1948,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const root =
 			theme.bold(theme.fg("accent", "Todos")) +
 			(multiPhase ? theme.fg("dim", ` · ${activeIdx + 1}/${phases.length}`) : "");
-		const lines = ["", root, ...phaseTreeLines.map(line => ` ${line}`)];
+		const lines = ["", root, ...phaseTreeLines.map(line => ` ${line}`), ...renderTodoProjectionLines(projections)];
 		this.todoContainer.addChild(new Text(lines.join("\n"), 1, 0));
 	}
 
@@ -4414,6 +4458,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			];
 		}
 		this.#syncTodoAutoClearTimer();
+		this.#renderTodoList();
+		this.ui.requestRender();
+	}
+
+	refreshTodoProjections(): void {
 		this.#renderTodoList();
 		this.ui.requestRender();
 	}

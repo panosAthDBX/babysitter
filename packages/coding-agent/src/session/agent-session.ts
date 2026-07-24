@@ -235,6 +235,11 @@ import type {
 	TurnStartEvent,
 } from "../extensibility/extensions";
 import { createExtensionModelQuery } from "../extensibility/extensions/model-api";
+import {
+	type NamespacedTodoProjection,
+	type TodoProjectionPhase,
+	TodoProjectionStore,
+} from "../extensibility/extensions/todo-projection";
 import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import type { HookCommandContext } from "../extensibility/hooks/types";
@@ -621,6 +626,7 @@ export type AgentSessionEvent =
 	| { type: "ttsr_triggered"; rules: Rule[] }
 	| { type: "todo_reminder"; todos: TodoItem[]; attempt: number; maxAttempts: number }
 	| { type: "todo_auto_clear" }
+	| { type: "todo_projection_changed" }
 	| { type: "irc_message"; message: CustomMessage }
 	| { type: "notice"; level: "info" | "warning" | "error"; message: string; source?: string }
 	| {
@@ -1852,6 +1858,7 @@ export class AgentSession {
 	#planModeReminderCount = 0;
 	#planModeReminderAwaitingProgress = false;
 	#todoPhases: TodoPhase[] = [];
+	#todoProjections = new TodoProjectionStore();
 	#replanTitleRefreshInFlight: Promise<void> | undefined = undefined;
 	/** Resolved TITLE_SYSTEM.md override applied to every automatic session-title
 	 *  generation path. Refresh via {@link AgentSession.setTitleSystemPrompt} when
@@ -6270,6 +6277,7 @@ export class AgentSession {
 		} catch (error) {
 			logger.warn("Failed to emit session_shutdown event", { error: String(error) });
 		}
+		this.clearTodoProjections();
 		// Abort post-prompt work so the drain below can complete. Without this, a
 		// deferred-handoff task that has already advanced into
 		// `await this.handoff(...) → generateHandoff(...)` keeps awaiting a live LLM stream
@@ -9181,6 +9189,24 @@ export class AgentSession {
 		this.#todoPhases = this.#cloneTodoPhases(phases);
 	}
 
+	/**
+	 * Replace one extension-owned projection without touching canonical todos.
+	 * The projection is cloned and stripped to its public display fields.
+	 */
+	setTodoProjection(namespace: string, phases: readonly TodoProjectionPhase[] | undefined): void {
+		if (this.#todoProjections.set(namespace, phases)) this.#emit({ type: "todo_projection_changed" });
+	}
+
+	/** Return deterministic, defensive snapshots for host rendering. */
+	getTodoProjections(): NamespacedTodoProjection[] {
+		return this.#todoProjections.snapshot();
+	}
+
+	/** Remove every derived projection in the current host session. */
+	clearTodoProjections(): void {
+		if (this.#todoProjections.clear()) this.#emit({ type: "todo_projection_changed" });
+	}
+
 	#isTodoInitResult(details: Record<string, unknown>, toolCallId: string | undefined): boolean {
 		const detailOp = getStringProperty(details, "op");
 		if (detailOp) return detailOp === "init";
@@ -9419,6 +9445,7 @@ export class AgentSession {
 
 		this.#clearCheckpointRuntimeState();
 		this.setTodoPhases([]);
+		this.clearTodoProjections();
 		this.#freshProviderSessionId = undefined;
 		this.#clearInheritedProviderPromptCacheKey();
 		this.#syncAgentSessionId();
@@ -9526,6 +9553,8 @@ export class AgentSession {
 		this.#rekeyHindsightMemoryForCurrentSessionId();
 		this.#rekeyMnemopiMemoryForCurrentSessionId();
 		await this.#resetMemoryContextForNewTranscript();
+
+		this.clearTodoProjections();
 
 		// Emit session_switch event with reason "fork" to hooks
 		if (this.#extensionRunner) {
@@ -10930,6 +10959,7 @@ export class AgentSession {
 			this.agent.replaceMessages(sessionContext.messages);
 			this.#resetAllAdvisorRuntimes();
 			this.#syncTodoPhasesFromBranch();
+			this.clearTodoProjections();
 			if (this.#extensionRunner) {
 				await this.#extensionRunner.emit({
 					type: "session_switch",
@@ -15685,6 +15715,8 @@ export class AgentSession {
 			}
 		}
 
+		const previousTodoProjections = this.getTodoProjections();
+
 		this.#disconnectFromAgent();
 		await this.abort({ goalReason: "internal" });
 
@@ -15755,6 +15787,8 @@ export class AgentSession {
 			const fallbackSelectedMCPToolNames = this.#getSessionDefaultSelectedMCPToolNames(sessionPath);
 			await this.#restoreMCPSelectionsForSessionContext(sessionContext, { fallbackSelectedMCPToolNames });
 			this.#rehydrateCheckpointRewindState();
+
+			this.clearTodoProjections();
 
 			// Emit session_switch event to hooks
 			if (this.#extensionRunner) {
@@ -15924,6 +15958,10 @@ export class AgentSession {
 			this.#applyThinkingLevelToAgent(previousThinkingLevel);
 			this.#serviceTierByFamily = previousServiceTierByFamily;
 			this.#syncTodoPhasesFromBranch();
+			this.clearTodoProjections();
+			for (const projection of previousTodoProjections) {
+				this.setTodoProjection(projection.namespace, projection.phases);
+			}
 			this.#resetAllAdvisorRuntimes();
 			this.#reconnectToAgent();
 			if (restoreMcpError) {
@@ -15996,6 +16034,8 @@ export class AgentSession {
 		const sessionContext = this.buildDisplaySessionContext();
 
 		await this.#restoreMCPSelectionsForSessionContext(sessionContext);
+
+		this.clearTodoProjections();
 
 		// Emit session_branch event to hooks (after branch completes)
 		if (this.#extensionRunner) {
@@ -16088,6 +16128,8 @@ export class AgentSession {
 
 		const sessionContext = this.buildDisplaySessionContext();
 		await this.#restoreMCPSelectionsForSessionContext(sessionContext);
+
+		this.clearTodoProjections();
 
 		if (this.#extensionRunner) {
 			await this.#extensionRunner.emit({
@@ -16279,6 +16321,8 @@ export class AgentSession {
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 
 		this.#branchSummaryAbortController = undefined;
+
+		this.clearTodoProjections();
 
 		// Emit session_tree event; only handlers can mutate session entries, so skip
 		// the emit and the context rebuild when no handlers are registered (mirrors

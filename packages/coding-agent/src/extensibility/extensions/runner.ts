@@ -282,6 +282,7 @@ export class ExtensionRunner {
 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
 		this.runtime.getSessionName = actions.getSessionName;
 		this.runtime.setSessionName = actions.setSessionName;
+		if (actions.setTodoProjection) this.runtime.setTodoProjection = actions.setTodoProjection;
 
 		// Context actions (required)
 		this.#getModel = contextActions.getModel;

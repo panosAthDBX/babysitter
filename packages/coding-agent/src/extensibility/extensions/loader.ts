@@ -38,6 +38,7 @@ import type {
 	RegisteredCommand,
 	ToolDefinition,
 } from "./types";
+import type { TodoProjectionPhase } from "./todo-projection";
 
 installLegacyPiSpecifierShim();
 
@@ -112,6 +113,10 @@ export class ExtensionRuntime implements IExtensionRuntime {
 	}
 
 	setSessionName(): Promise<void> {
+		throw new ExtensionRuntimeNotInitializedError();
+	}
+
+	setTodoProjection(): void {
 		throw new ExtensionRuntimeNotInitializedError();
 	}
 }
@@ -258,6 +263,10 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 
 	setSessionName(name: string): Promise<void> {
 		return this.runtime.setSessionName(name);
+	}
+
+	setTodoProjection(namespace: string, phases: readonly TodoProjectionPhase[] | undefined): void {
+		this.runtime.setTodoProjection?.(namespace, phases);
 	}
 
 	registerProvider(name: string, config: ProviderConfig): void {

@@ -309,6 +309,7 @@ export interface InteractiveModeContext {
 	rebuildChatFromMessages(): void;
 	setTodos(todos: TodoItem[] | TodoPhase[]): void;
 	reloadTodos(): Promise<void>;
+	refreshTodoProjections(): void;
 	toggleTodoExpansion(): void;
 
 	// Command handling

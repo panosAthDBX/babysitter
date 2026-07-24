@@ -1134,6 +1134,7 @@ describe("ExtensionRunner", () => {
 					setThinkingLevel: () => {},
 					getSessionName: () => undefined,
 					setSessionName: async () => {},
+					setTodoProjection: () => {},
 				},
 				{
 					getModel: () => undefined,
@@ -1198,6 +1199,7 @@ describe("ExtensionRunner", () => {
 					setSessionName: async name => {
 						await sessionManager.setSessionName(name);
 					},
+					setTodoProjection: () => {},
 				},
 				{
 					getModel: () => undefined,
@@ -1234,6 +1236,73 @@ describe("ExtensionRunner", () => {
 		});
 	});
 
+	describe("todo projection API", () => {
+		it("forwards projection replacement and removal without a UI context", async () => {
+			const extCode = `
+				export default function(pi) {
+					pi.on("session_start", () => {
+						pi.setTodoProjection("babysitter", [{
+							id: "effects",
+							name: "Effects",
+							tasks: [
+								{ id: "shell", content: "Run shell effect", status: "in_progress" },
+								{ id: "agent", content: "Run agent effect", status: "in_progress" },
+							],
+						}]);
+						pi.setTodoProjection("babysitter", undefined);
+					});
+				}
+			`;
+			const explicitExtensionPath = path.join(tempDir.path(), "todo-projection.ts");
+			fs.writeFileSync(explicitExtensionPath, extCode);
+
+			const result = await loadTestExtensions([explicitExtensionPath]);
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const setTodoProjection = vi.fn();
+			runner.initialize(
+				{
+					sendMessage: () => {},
+					sendUserMessage: () => {},
+					appendEntry: () => {},
+					setLabel: () => {},
+					getActiveTools: () => [],
+					getAllTools: () => [],
+					setActiveTools: async () => {},
+					getCommands: () => [],
+					setModel: async () => false,
+					getThinkingLevel: () => undefined,
+					setThinkingLevel: () => {},
+					getSessionName: () => undefined,
+					setSessionName: async () => {},
+					setTodoProjection,
+				},
+				{
+					getModel: () => undefined,
+					isIdle: () => true,
+					abort: () => {},
+					hasPendingMessages: () => false,
+					shutdown: () => {},
+					getContextUsage: () => undefined,
+					compact: async () => {},
+					getSystemPrompt: () => [],
+				},
+			);
+
+			await runner.emit({ type: "session_start" });
+
+			expect(setTodoProjection).toHaveBeenCalledTimes(2);
+			expect(setTodoProjection.mock.calls[0]?.[0]).toBe("babysitter");
+			expect(setTodoProjection.mock.calls[0]?.[1]?.[0]?.tasks).toHaveLength(2);
+			expect(setTodoProjection.mock.calls[1]).toEqual(["babysitter", undefined]);
+		});
+	});
+
 	describe("tool approval lifecycle", () => {
 		const initializeRunner = (
 			runner: ExtensionRunner,
@@ -1254,6 +1323,7 @@ describe("ExtensionRunner", () => {
 					setThinkingLevel: () => {},
 					getSessionName: () => undefined,
 					setSessionName: async () => {},
+					setTodoProjection: () => {},
 				},
 				{
 					getModel: () => undefined,
@@ -1921,6 +1991,7 @@ describe("ExtensionRunner", () => {
 					setThinkingLevel: () => {},
 					getSessionName: () => sessionManager.getSessionName(),
 					setSessionName: async () => {},
+					setTodoProjection: () => {},
 				},
 				{
 					getModel: () => undefined,

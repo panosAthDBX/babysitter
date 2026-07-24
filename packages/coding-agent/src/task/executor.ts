@@ -2647,6 +2647,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						setSessionName: async name => {
 							await session.sessionManager.setSessionName(name, "user");
 						},
+						setTodoProjection: (namespace, phases) => session.setTodoProjection(namespace, phases),
 					},
 					{
 						getModel: () => session.model,
