@@ -3,6 +3,12 @@ import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import {
+	type ExtensionFactory,
+	ExtensionRunner,
+	loadExtensionFromFactory,
+} from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import { ExtensionRuntime } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
@@ -52,7 +58,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		resetSettingsForTest();
 	});
 
-	async function createMode(todoClearDelay: number): Promise<void> {
+	async function createMode(todoClearDelay: number, extensionFactory?: ExtensionFactory): Promise<void> {
 		await Settings.init({
 			inMemory: true,
 			cwd: tempDir.path(),
@@ -64,6 +70,19 @@ describe("InteractiveMode todo HUD persistence", () => {
 		if (!model) throw new Error("Expected claude-sonnet-4-5 to exist in registry");
 
 		eventBus = new EventBus();
+		const sessionManager = SessionManager.create(tempDir.path(), tempDir.path());
+		let extensionRunner: ExtensionRunner | undefined;
+		if (extensionFactory) {
+			const runtime = new ExtensionRuntime();
+			const extension = await loadExtensionFromFactory(
+				extensionFactory,
+				tempDir.path(),
+				eventBus,
+				runtime,
+				"startup-projection",
+			);
+			extensionRunner = new ExtensionRunner([extension], runtime, tempDir.path(), sessionManager, modelRegistry);
+		}
 		session = new AgentSession({
 			agent: new Agent({
 				initialState: {
@@ -73,12 +92,33 @@ describe("InteractiveMode todo HUD persistence", () => {
 					messages: [],
 				},
 			}),
-			sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
+			sessionManager,
 			settings: Settings.isolated({ "tasks.todoClearDelay": todoClearDelay }),
 			modelRegistry,
+			extensionRunner,
 		});
 		mode = new InteractiveMode(session, "test", undefined, undefined, undefined, undefined, eventBus);
 	}
+
+	it("renders a projection published by a session_start handler on initial startup", async () => {
+		await createMode(-1, pi => {
+			pi.on("session_start", () => {
+				pi.setTodoProjection("startup-projection", [
+					{
+						id: "startup-phase",
+						name: "Startup phase",
+						tasks: [{ id: "startup-task", content: "Startup task", status: "in_progress" }],
+					},
+				]);
+			});
+		});
+		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+
+		await mode.init();
+
+		expect(renderTodos(mode)).toContain("startup-projection");
+		expect(renderTodos(mode)).toContain("Startup task");
+	});
 
 	it("clears closed todos from the panel instantly without mutating session history", async () => {
 		await createMode(0);
