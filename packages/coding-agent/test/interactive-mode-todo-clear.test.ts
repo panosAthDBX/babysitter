@@ -136,6 +136,9 @@ describe("InteractiveMode todo HUD persistence", () => {
 	it("renders projection changes from the session focused through Agent Hub", async () => {
 		await createMode(-1);
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+		session.setTodoPhases([
+			{ name: "Main native phase", tasks: [{ content: "Main native task", status: "in_progress" }] },
+		]);
 		await mode.init();
 		session.setTodoProjection("main-projection", [
 			{
@@ -146,6 +149,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		]);
 		mode.refreshTodoProjections();
 		expect(renderTodos(mode)).toContain("main-projection");
+		expect(renderTodos(mode)).toContain("Main native task");
 
 		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected claude-sonnet-4-5 to exist in registry");
@@ -162,6 +166,9 @@ describe("InteractiveMode todo HUD persistence", () => {
 			settings: Settings.isolated({ "tasks.todoClearDelay": -1 }),
 			modelRegistry,
 		});
+		focusedSession.setTodoPhases([
+			{ name: "Focused native phase", tasks: [{ content: "Focused native task", status: "in_progress" }] },
+		]);
 		AgentRegistry.global().register({
 			id: FOCUSED_AGENT_ID,
 			displayName: FOCUSED_AGENT_ID,
@@ -184,10 +191,14 @@ describe("InteractiveMode todo HUD persistence", () => {
 		expect(renderTodos(mode)).toContain("focused-projection");
 		expect(renderTodos(mode)).toContain("Focused task");
 		expect(renderTodos(mode)).not.toContain("main-projection");
+		expect(renderTodos(mode)).toContain("Focused native task");
+		expect(renderTodos(mode)).not.toContain("Main native task");
 
 		await mode.unfocusSession();
 		expect(renderTodos(mode)).toContain("main-projection");
 		expect(renderTodos(mode)).not.toContain("focused-projection");
+		expect(renderTodos(mode)).toContain("Main native task");
+		expect(renderTodos(mode)).not.toContain("Focused native task");
 	});
 
 	it("marks todos complete when subagent reconciliation reports a finished agent", async () => {
