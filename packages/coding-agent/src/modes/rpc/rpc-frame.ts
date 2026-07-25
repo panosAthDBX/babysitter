@@ -243,7 +243,9 @@ function overflowFrame(frame: object): object {
 export function encodeRpcFrame(frame: object, streamedMessageCount = 0, streamedMessages?: readonly unknown[]): string {
 	let json = JSON.stringify(frame);
 	if (serializedFrameBytes(json) <= MAX_RPC_FRAME_BYTES) return `${json}\n`;
-	if (isRecord(frame) && frame.type === "response") {
+	if (isRecord(frame) && (frame.type === "response" || frame.type === "todo_projection_changed")) {
+		// Projection arrays are schema-bearing snapshots. Generic v1 shrinking
+		// would append string elision markers to them and create an invalid event.
 		return `${JSON.stringify(overflowFrame(frame))}\n`;
 	}
 

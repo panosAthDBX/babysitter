@@ -56,6 +56,49 @@ function expectAcpNotifications(updates: SessionNotification[]): void {
 	}
 }
 
+it("maps todo projection snapshots to ACP plans after native todos", () => {
+	const updates = mapAgentSessionEventToAcpSessionUpdates(
+		{
+			type: "todo_projection_changed",
+			projections: [
+				{
+					namespace: "deployments",
+					phases: [
+						{
+							id: "release",
+							name: "Release",
+							tasks: [
+								{ id: "publish", content: "Publish package", status: "in_progress" },
+								{ id: "verify", content: "Verify release", status: "failed" },
+							],
+						},
+					],
+				},
+			],
+		} as AgentSessionEvent,
+		"session-1",
+		{
+			todoPhases: [
+				{
+					name: "Native",
+					tasks: [{ content: "Native task", status: "pending" }],
+				},
+			],
+		},
+	);
+
+	expect(updates).toHaveLength(1);
+	expectAcpNotifications(updates);
+	expect(updates[0]?.update).toEqual({
+		sessionUpdate: "plan",
+		entries: [
+			{ content: "Native task", priority: "medium", status: "pending" },
+			{ content: "[deployments / Release] Publish package", priority: "medium", status: "in_progress" },
+			{ content: "[deployments / Release] Verify release", priority: "medium", status: "completed" },
+		],
+	});
+});
+
 const TEST_MODEL: Model = buildModel({
 	id: "claude-sonnet-4-20250514",
 	name: "Claude Sonnet",

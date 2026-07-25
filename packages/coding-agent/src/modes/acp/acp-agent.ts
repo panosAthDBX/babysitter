@@ -85,6 +85,7 @@ import {
 	buildToolCallStartUpdate,
 	extractAssistantMessageText,
 	mapAgentSessionEventToAcpSessionUpdates,
+	mapTodoProjectionsToAcpPlanUpdate,
 	normalizeReplayToolArguments,
 } from "./acp-event-mapper";
 import { ACP_TERMINAL_AUTH_FLAG } from "./terminal-auth";
@@ -1151,6 +1152,25 @@ export class AcpAgent implements Agent {
 	}
 
 	async #handleLifetimeEvent(record: ManagedSessionRecord, event: AgentSessionEvent): Promise<void> {
+		if (event.type === "todo_projection_changed") {
+			const promptTurn = record.promptTurn;
+			if (promptTurn && !promptTurn.settled && !promptTurn.cancelRequested) {
+				return;
+			}
+			try {
+				for (const notification of mapAgentSessionEventToAcpSessionUpdates(event, record.session.sessionId, {
+					todoPhases: record.session.getTodoPhases(),
+				})) {
+					await this.#connection.sessionUpdate(notification);
+				}
+			} catch (error) {
+				logger.warn("Failed to push todo projection plan update", {
+					sessionId: record.session.sessionId,
+					error,
+				});
+			}
+			return;
+		}
 		if (event.type !== "thinking_level_changed") {
 			return;
 		}
@@ -1229,6 +1249,7 @@ export class AcpAgent implements Agent {
 			getMessageId: message => this.#getLiveMessageId(record, message),
 			getMessageProgress: message => this.#getLiveMessageProgress(record, message),
 			getToolArgs: toolCallId => record.toolArgsById.get(toolCallId),
+			todoPhases: record.session.getTodoPhases(),
 			cwd: record.session.sessionManager.getCwd(),
 			resolveImageData: resolveImageDataForAcp,
 		})) {
@@ -1884,6 +1905,10 @@ export class AcpAgent implements Agent {
 				sessionUpdate: "available_commands_update",
 				availableCommands: await this.#buildAvailableCommands(record.session),
 			},
+		});
+		await this.#connection.sessionUpdate({
+			sessionId,
+			update: mapTodoProjectionsToAcpPlanUpdate(record.session.getTodoPhases(), record.session.getTodoProjections()),
 		});
 		await this.#connection.sessionUpdate({
 			sessionId,

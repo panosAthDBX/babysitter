@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import { AnthropicOAuthFlow, loginAnthropic, refreshAnthropicToken } from "@oh-my-pi/pi-ai";
 import { claudeCodeVersion } from "@oh-my-pi/pi-ai/providers/anthropic";
-import { AnthropicOAuthFlow, refreshAnthropicToken } from "@oh-my-pi/pi-ai/registry/oauth/anthropic";
+import * as oauth from "@oh-my-pi/pi-ai/registry/oauth";
 import {
 	buildAnthropicAuthConfig,
 	buildAnthropicSearchHeaders,
@@ -13,6 +14,12 @@ afterEach(() => {
 });
 
 describe("anthropic oauth alignment", () => {
+	it("keeps Anthropic OAuth APIs on the public barrels", () => {
+		expect(oauth.AnthropicOAuthFlow).toBe(AnthropicOAuthFlow);
+		expect(oauth.loginAnthropic).toBe(loginAnthropic);
+		expect(oauth.refreshAnthropicToken).toBe(refreshAnthropicToken);
+	});
+
 	it("generates auth URL with expected scope set", async () => {
 		const flow = new AnthropicOAuthFlow({});
 		const state = "state-123";

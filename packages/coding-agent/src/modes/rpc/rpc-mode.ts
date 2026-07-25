@@ -644,10 +644,23 @@ export async function runRpcMode(
 			maxReassembledFrameBytes: MAX_RPC_REASSEMBLED_BYTES,
 		}),
 	);
-	const output = (obj: RpcResponse | RpcExtensionUIRequest | object) => {
+	const writeOutput = (obj: RpcResponse | RpcExtensionUIRequest | object) => {
 		writeFrames(frameEncoder.encodeFrames(obj));
-		if (isRecord(obj) && obj.type === "response" && obj.command === "negotiate_protocol" && obj.success === true)
-			frameEncoder.setProtocolVersion(2);
+	};
+	let deferredStartupTodoProjection: object | undefined;
+	let deferringStartupTodoProjection = true;
+	const flushStartupTodoProjection = () => {
+		deferringStartupTodoProjection = false;
+		if (!deferredStartupTodoProjection) return;
+		writeOutput(deferredStartupTodoProjection);
+		deferredStartupTodoProjection = undefined;
+	};
+	const output = (obj: RpcResponse | RpcExtensionUIRequest | object) => {
+		writeOutput(obj);
+		if (isRecord(obj) && obj.type === "response" && obj.command === "negotiate_protocol") {
+			if (obj.success === true) frameEncoder.setProtocolVersion(2);
+			flushStartupTodoProjection();
+		}
 	};
 	const emitRpcTitles = shouldEmitRpcTitles();
 
@@ -918,8 +931,14 @@ export async function runRpcMode(
 	setToolUIContext?.(rpcUiContext, true);
 
 	// Subscribe before extension initialization so session_start handlers cannot
-	// emit events before the RPC transport is listening.
+	// emit events before the RPC transport is listening. Startup projection
+	// snapshots are coalesced until the client either negotiates v2 or proves it
+	// is staying on v1 with its first ordinary command.
 	session.subscribe(event => {
+		if (deferringStartupTodoProjection && event.type === "todo_projection_changed") {
+			deferredStartupTodoProjection = event;
+			return;
+		}
 		output(event);
 	});
 
@@ -961,6 +980,7 @@ export async function runRpcMode(
 	// Handle a single command
 	const handleCommand = async (command: RpcCommand): Promise<RpcResponse> => {
 		const id = command.id;
+		if (command.type !== "negotiate_protocol") flushStartupTodoProjection();
 
 		switch (command.type) {
 			case "negotiate_protocol": {

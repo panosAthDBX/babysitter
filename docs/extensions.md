@@ -146,14 +146,16 @@ status is one of `pending`, `in_progress`, `completed`, `failed`, `cancelled`,
 or `abandoned`.
 
 ```ts
-pi.setTodoProjection("deployments", [{
-  id: "release",
-  name: "Release",
-  tasks: [
-    { id: "build", content: "Build artifacts", status: "completed" },
-    { id: "publish", content: "Publish package", status: "in_progress" },
-  ],
-}]);
+pi.on("session_start", () => {
+  pi.setTodoProjection("deployments", [{
+    id: "release",
+    name: "Release",
+    tasks: [
+      { id: "build", content: "Build artifacts", status: "completed" },
+      { id: "publish", content: "Publish package", status: "in_progress" },
+    ],
+  }]);
+});
 ```
 
 Namespaces coexist and render deterministically after native todos. Projection

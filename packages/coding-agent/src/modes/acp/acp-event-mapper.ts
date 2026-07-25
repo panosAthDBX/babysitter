@@ -6,10 +6,11 @@ import type {
 	ToolCallLocation,
 	ToolKind,
 } from "@agentclientprotocol/sdk";
+import type { NamespacedTodoProjection, TodoProjectionStatus } from "../../extensibility/extensions/todo-projection";
 import { parseXdUrl } from "../../internal-urls/xd-protocol";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import { resolveToCwd } from "../../tools/path-utils";
-import type { TodoStatus } from "../../tools/todo";
+import type { TodoPhase, TodoStatus } from "../../tools/todo";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 
 interface MessageProgress {
@@ -22,6 +23,7 @@ interface AcpEventMapperOptions {
 	getMessageProgress?: (message: unknown) => MessageProgress | undefined;
 	getToolArgs?: (toolCallId: string) => unknown;
 	resolveImageData?: (data: string, mimeType: string | undefined) => string;
+	todoPhases?: readonly TodoPhase[];
 	/**
 	 * Session cwd. Tool call locations sent to ACP clients must be absolute
 	 * (the editor host needs them to open or focus files). When provided,
@@ -254,6 +256,13 @@ export function mapAgentSessionEventToAcpSessionUpdates(
 		}
 		case "todo_auto_clear":
 			return [toSessionNotification(sessionId, { sessionUpdate: "plan", entries: [] })];
+		case "todo_projection_changed":
+			return [
+				toSessionNotification(
+					sessionId,
+					mapTodoProjectionsToAcpPlanUpdate(options.todoPhases ?? [], event.projections),
+				),
+			];
 		default:
 			return [];
 	}
@@ -374,6 +383,40 @@ const todoStatusMap: Record<TodoStatus, "pending" | "in_progress" | "completed">
 
 function mapTodoStatus(status: TodoStatus): "pending" | "in_progress" | "completed" {
 	return todoStatusMap[status];
+}
+
+const todoProjectionStatusMap: Record<TodoProjectionStatus, "pending" | "in_progress" | "completed"> = {
+	pending: "pending",
+	in_progress: "in_progress",
+	completed: "completed",
+	failed: "completed",
+	cancelled: "completed",
+	abandoned: "completed",
+};
+
+export function mapTodoProjectionsToAcpPlanUpdate(
+	todoPhases: readonly TodoPhase[],
+	projections: readonly NamespacedTodoProjection[],
+): SessionUpdate {
+	const entries: Extract<SessionUpdate, { sessionUpdate: "plan" }>["entries"] = todoPhases.flatMap(phase =>
+		phase.tasks.map(todo => ({
+			content: todo.content,
+			priority: "medium" as const,
+			status: mapTodoStatus(todo.status),
+		})),
+	);
+	for (const projection of projections) {
+		for (const phase of projection.phases) {
+			for (const task of phase.tasks) {
+				entries.push({
+					content: `[${projection.namespace} / ${phase.name}] ${task.content}`,
+					priority: "medium",
+					status: todoProjectionStatusMap[task.status],
+				});
+			}
+		}
+	}
+	return { sessionUpdate: "plan", entries };
 }
 
 function mapTodoResultToPlanUpdate(

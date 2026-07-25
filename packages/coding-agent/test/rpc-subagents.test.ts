@@ -22,7 +22,7 @@ import {
 	TASK_SUBAGENT_PROGRESS_CHANNEL,
 } from "@oh-my-pi/pi-coding-agent/task";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
-import { removeSyncWithRetries, withTimeout } from "@oh-my-pi/pi-utils";
+import { isRecord, ptree, readJsonl, removeSyncWithRetries, withTimeout } from "@oh-my-pi/pi-utils";
 
 const tempPaths: string[] = [];
 
@@ -446,7 +446,7 @@ function handle(frame) {
 		expect(sessionEventTypes).toContain("todo_projection_changed");
 	});
 
-	test("delivers startup projection snapshots through session events", async () => {
+	test("delivers oversized startup projection snapshots after v2 negotiation", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-rpc-startup-projection-"));
 		tempPaths.push(tempDir);
 		const extensionPath = path.join(tempDir, "startup-projection.ts");
@@ -458,7 +458,7 @@ export default function (pi) {
 		pi.setTodoProjection("rpc-startup", [{
 			id: "startup-phase",
 			name: "Startup",
-			tasks: [{ id: "startup-task", content: "Published before command handling", status: "in_progress" }]
+			tasks: [{ id: "startup-task", content: "x".repeat(1024 * 1024 + 4096), status: "in_progress" }]
 		}]);
 	});
 }
@@ -480,25 +480,81 @@ export default function (pi) {
 		});
 
 		await client.start();
-		const event = await withTimeout(promise, 10_000, "startup projection event never reached RpcClient");
+		const event = await withTimeout(promise, 10_000, "oversized startup projection event never reached RpcClient");
+		const projection = event.projections[0];
+		expect(projection?.namespace).toBe("rpc-startup");
+		expect(projection?.phases[0]?.tasks[0]).toMatchObject({
+			id: "startup-task",
+			status: "in_progress",
+		});
+		expect(projection?.phases[0]?.tasks[0]?.content).toHaveLength(1024 * 1024 + 4096);
+	});
 
-		expect(event.projections).toEqual([
+	test("reports an oversized startup projection cleanly to a v1 client", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-rpc-v1-startup-projection-"));
+		tempPaths.push(tempDir);
+		const extensionPath = path.join(tempDir, "startup-projection.ts");
+		await Bun.write(
+			extensionPath,
+			`
+export default function (pi) {
+	pi.on("session_start", () => {
+		pi.setTodoProjection("rpc-startup", [{
+			id: "startup-phase",
+			name: "Startup",
+			tasks: [{ id: "startup-task", content: "x".repeat(1024 * 1024 + 4096), status: "in_progress" }]
+		}]);
+	});
+}
+`,
+		);
+
+		const child = ptree.spawn(
+			[
+				"bun",
+				path.join(import.meta.dir, "..", "src", "cli.ts"),
+				"--mode",
+				"rpc",
+				"--provider",
+				"anthropic",
+				"--model",
+				"claude-sonnet-4-5",
+				"--extension",
+				extensionPath,
+			],
 			{
-				namespace: "rpc-startup",
-				phases: [
-					{
-						id: "startup-phase",
-						name: "Startup",
-						tasks: [
-							{
-								id: "startup-task",
-								content: "Published before command handling",
-								status: "in_progress",
-							},
-						],
-					},
-				],
+				cwd: path.join(import.meta.dir, ".."),
+				env: { ...Bun.env, PI_CODING_AGENT_DIR: path.join(tempDir, "agent"), PI_NO_TITLE: "1" },
+				stdin: "pipe",
 			},
-		]);
+		);
+		try {
+			child.stdin.write(`${JSON.stringify({ type: "get_state", id: "v1-probe" })}\n`);
+			await child.stdin.flush();
+			const frames = await withTimeout(
+				(async () => {
+					const received: object[] = [];
+					for await (const frame of readJsonl(child.stdout)) {
+						if (!isRecord(frame)) continue;
+						received.push(frame);
+						if (frame.type === "response" && frame.id === "v1-probe") return received;
+					}
+					throw new Error(`RPC v1 output closed before probe response: ${child.peekStderr()}`);
+				})(),
+				10_000,
+				"RPC v1 startup projection probe timed out",
+			);
+
+			expect(frames).toContainEqual({
+				type: "rpc_frame_error",
+				originalType: "todo_projection_changed",
+				error: "RPC frame exceeded the transport limit",
+			});
+			expect(frames.some(frame => isRecord(frame) && frame.type === "todo_projection_changed")).toBe(false);
+		} finally {
+			child.stdin.end();
+			child.kill();
+			await child.exited.catch(() => {});
+		}
 	});
 });
