@@ -293,7 +293,6 @@ export class ExtensionUiController {
 		await extensionRunner.emit({
 			type: "session_start",
 		});
-		this.ctx.refreshTodoProjections();
 	}
 
 	/**
