@@ -241,6 +241,62 @@ describe("InteractiveMode todo HUD persistence", () => {
 		expect(renderTodos(mode)).not.toContain("Focused native task");
 	});
 
+	it("never persists focused-session todos into the main session during reconciliation", async () => {
+		await createMode(-1);
+		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+		session.setTodoPhases([{ name: "Main", tasks: [{ content: "Keep main untouched", status: "pending" }] }]);
+		await mode.init();
+
+		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected claude-sonnet-4-5 to exist in registry");
+		focusedSession = new AgentSession({
+			agent: new Agent({
+				initialState: {
+					model,
+					systemPrompt: ["Focused reconciliation test"],
+					tools: [],
+					messages: [],
+				},
+			}),
+			sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
+			settings: Settings.isolated({ "tasks.todoClearDelay": -1 }),
+			modelRegistry,
+		});
+		focusedSession.setTodoPhases([
+			{ name: "Focused", tasks: [{ content: "Finish worker task", status: "in_progress" }] },
+		]);
+		AgentRegistry.global().register({
+			id: FOCUSED_AGENT_ID,
+			displayName: FOCUSED_AGENT_ID,
+			kind: "sub",
+			parentId: "Main",
+			session: focusedSession,
+			sessionFile: null,
+			status: "running",
+		});
+		await mode.focusAgentSession(FOCUSED_AGENT_ID);
+
+		vi.useFakeTimers();
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			id: "FinishedWorker",
+			index: 1,
+			agent: "task",
+			description: "Finish worker task",
+			status: "completed",
+			detached: true,
+		});
+		vi.advanceTimersByTime(100);
+
+		expect(session.getTodoPhases()).toEqual([
+			{ name: "Main", tasks: [{ content: "Keep main untouched", status: "pending" }] },
+		]);
+		expect(focusedSession.getTodoPhases()).toEqual([
+			{ name: "Focused", tasks: [{ content: "Finish worker task", status: "in_progress" }] },
+		]);
+		expect(renderTodos(mode)).toContain("Finish worker task");
+		expect(renderTodos(mode)).not.toContain("Keep main untouched");
+	});
+
 	it("marks todos complete when subagent reconciliation reports a finished agent", async () => {
 		await createMode(-1);
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});

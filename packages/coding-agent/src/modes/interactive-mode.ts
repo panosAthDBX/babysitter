@@ -1978,8 +1978,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		if (completedDescs.length === 0) return;
 
+		const mainTodoPhases = this.session.getTodoPhases();
 		let mutated = false;
-		const next: TodoPhase[] = this.todoPhases.map(phase => ({
+		const next: TodoPhase[] = mainTodoPhases.map(phase => ({
 			name: phase.name,
 			tasks: phase.tasks.map(task => {
 				if (task.status !== "pending" && task.status !== "in_progress" && task.status !== "blocked") {
@@ -1994,7 +1995,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}));
 		if (!mutated) return;
 		this.session.setTodoPhases(next);
-		this.setTodos(next);
+		if (this.viewSession === this.session) this.setTodos(next);
 	}
 
 	#cancelTodoAutoClearTimer(): void {

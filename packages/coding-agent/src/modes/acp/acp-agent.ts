@@ -1160,6 +1160,7 @@ export class AcpAgent implements Agent {
 			try {
 				for (const notification of mapAgentSessionEventToAcpSessionUpdates(event, record.session.sessionId, {
 					todoPhases: record.session.getTodoPhases(),
+					todoProjections: record.session.getTodoProjections(),
 				})) {
 					await this.#connection.sessionUpdate(notification);
 				}
@@ -1250,6 +1251,7 @@ export class AcpAgent implements Agent {
 			getMessageProgress: message => this.#getLiveMessageProgress(record, message),
 			getToolArgs: toolCallId => record.toolArgsById.get(toolCallId),
 			todoPhases: record.session.getTodoPhases(),
+			todoProjections: record.session.getTodoProjections(),
 			cwd: record.session.sessionManager.getCwd(),
 			resolveImageData: resolveImageDataForAcp,
 		})) {

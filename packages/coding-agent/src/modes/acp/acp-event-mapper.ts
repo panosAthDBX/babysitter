@@ -24,6 +24,7 @@ interface AcpEventMapperOptions {
 	getToolArgs?: (toolCallId: string) => unknown;
 	resolveImageData?: (data: string, mimeType: string | undefined) => string;
 	todoPhases?: readonly TodoPhase[];
+	todoProjections?: readonly NamespacedTodoProjection[];
 	/**
 	 * Session cwd. Tool call locations sent to ACP clients must be absolute
 	 * (the editor host needs them to open or focus files). When provided,
@@ -240,22 +241,26 @@ export function mapAgentSessionEventToAcpSessionUpdates(
 				update.locations = locations;
 			}
 			const notifications = [toSessionNotification(sessionId, update)];
-			const planUpdate = mapTodoResultToPlanUpdate(event);
+			const planUpdate = mapTodoResultToPlanUpdate(event, options.todoProjections ?? []);
 			if (planUpdate) {
 				notifications.push(toSessionNotification(sessionId, planUpdate));
 			}
 			return notifications;
 		}
-		case "todo_reminder": {
-			const entries = event.todos.map(todo => ({
-				content: todo.content,
-				priority: "medium" as const,
-				status: mapTodoStatus(todo.status),
-			}));
-			return [toSessionNotification(sessionId, { sessionUpdate: "plan", entries })];
-		}
+		case "todo_reminder":
+			return [
+				toSessionNotification(
+					sessionId,
+					mapTodoProjectionsToAcpPlanUpdate(
+						[{ name: "Todos", tasks: event.todos }],
+						options.todoProjections ?? [],
+					),
+				),
+			];
 		case "todo_auto_clear":
-			return [toSessionNotification(sessionId, { sessionUpdate: "plan", entries: [] })];
+			return [
+				toSessionNotification(sessionId, mapTodoProjectionsToAcpPlanUpdate([], options.todoProjections ?? [])),
+			];
 		case "todo_projection_changed":
 			return [
 				toSessionNotification(
@@ -421,6 +426,7 @@ export function mapTodoProjectionsToAcpPlanUpdate(
 
 function mapTodoResultToPlanUpdate(
 	event: Extract<AgentSessionEvent, { type: "tool_execution_end" }>,
+	projections: readonly NamespacedTodoProjection[],
 ): SessionUpdate | undefined {
 	if (event.toolName !== "todo" || event.isError) {
 		return undefined;
@@ -429,14 +435,7 @@ function mapTodoResultToPlanUpdate(
 	if (!Array.isArray(phases)) {
 		return undefined;
 	}
-	return {
-		sessionUpdate: "plan",
-		entries: extractTodoEntries(phases).map(todo => ({
-			content: todo.content,
-			priority: "medium" as const,
-			status: mapTodoStatus(todo.status),
-		})),
-	};
+	return mapTodoProjectionsToAcpPlanUpdate([{ name: "Todos", tasks: extractTodoEntries(phases) }], projections);
 }
 
 function extractTodoPhases(result: unknown): unknown {
