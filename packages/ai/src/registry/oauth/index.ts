@@ -12,9 +12,9 @@ import type {
 	OAuthProviderInterface,
 } from "./types";
 
-export * from "./anthropic";
 export * from "./device-code";
 export type * from "./types";
+export { ANTHROPIC_OAUTH_GRANT_TTL_MS } from "./types";
 
 const builtInOAuthProviders: OAuthProviderInfo[] = PROVIDER_REGISTRY.filter(
 	provider => provider.login && provider.showInLoginList !== false,
