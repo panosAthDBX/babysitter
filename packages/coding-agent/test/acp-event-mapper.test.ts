@@ -70,6 +70,8 @@ it("maps todo projection snapshots to ACP plans after native todos", () => {
 							tasks: [
 								{ id: "publish", content: "Publish package", status: "in_progress" },
 								{ id: "verify", content: "Verify release", status: "failed" },
+								{ id: "cancel", content: "Cancel release", status: "cancelled" },
+								{ id: "abandon", content: "Abandon release", status: "abandoned" },
 							],
 						},
 					],
@@ -94,7 +96,9 @@ it("maps todo projection snapshots to ACP plans after native todos", () => {
 		entries: [
 			{ content: "Native task", priority: "medium", status: "pending" },
 			{ content: "[deployments / Release] Publish package", priority: "medium", status: "in_progress" },
-			{ content: "[deployments / Release] Verify release", priority: "medium", status: "completed" },
+			{ content: "[deployments / Release] Verify release [failed]", priority: "medium", status: "completed" },
+			{ content: "[deployments / Release] Cancel release [cancelled]", priority: "medium", status: "completed" },
+			{ content: "[deployments / Release] Abandon release [abandoned]", priority: "medium", status: "completed" },
 		],
 	});
 });

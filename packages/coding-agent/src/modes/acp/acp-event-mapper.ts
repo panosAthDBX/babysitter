@@ -413,8 +413,12 @@ export function mapTodoProjectionsToAcpPlanUpdate(
 	for (const projection of projections) {
 		for (const phase of projection.phases) {
 			for (const task of phase.tasks) {
+				const terminalStatus =
+					task.status === "failed" || task.status === "cancelled" || task.status === "abandoned"
+						? ` [${task.status}]`
+						: "";
 				entries.push({
-					content: `[${projection.namespace} / ${phase.name}] ${task.content}`,
+					content: `[${projection.namespace} / ${phase.name}] ${task.content}${terminalStatus}`,
 					priority: "medium",
 					status: todoProjectionStatusMap[task.status],
 				});
