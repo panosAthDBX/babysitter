@@ -137,11 +137,13 @@ describe("InteractiveMode todo HUD persistence", () => {
 		await createMode(-1);
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
 		await mode.init();
-		session.setTodoProjection("main-projection", [{
-			id: "main-phase",
-			name: "Main phase",
-			tasks: [{ id: "main-task", content: "Main task", status: "in_progress" }],
-		}]);
+		session.setTodoProjection("main-projection", [
+			{
+				id: "main-phase",
+				name: "Main phase",
+				tasks: [{ id: "main-task", content: "Main task", status: "in_progress" }],
+			},
+		]);
 		mode.refreshTodoProjections();
 		expect(renderTodos(mode)).toContain("main-projection");
 
@@ -171,11 +173,13 @@ describe("InteractiveMode todo HUD persistence", () => {
 		});
 
 		await mode.focusAgentSession(FOCUSED_AGENT_ID);
-		focusedSession.setTodoProjection("focused-projection", [{
-			id: "focused-phase",
-			name: "Focused phase",
-			tasks: [{ id: "focused-task", content: "Focused task", status: "in_progress" }],
-		}]);
+		focusedSession.setTodoProjection("focused-projection", [
+			{
+				id: "focused-phase",
+				name: "Focused phase",
+				tasks: [{ id: "focused-task", content: "Focused task", status: "in_progress" }],
+			},
+		]);
 
 		expect(renderTodos(mode)).toContain("focused-projection");
 		expect(renderTodos(mode)).toContain("Focused task");

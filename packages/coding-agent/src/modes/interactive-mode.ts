@@ -76,10 +76,7 @@ import type {
 	ExtensionWidgetContent,
 	ExtensionWidgetOptions,
 } from "../extensibility/extensions";
-import type {
-	NamespacedTodoProjection,
-	TodoProjectionItem,
-} from "../extensibility/extensions/todo-projection";
+import type { NamespacedTodoProjection, TodoProjectionItem } from "../extensibility/extensions/todo-projection";
 import type { CompactOptions } from "../extensibility/extensions/types";
 import type { Skill } from "../extensibility/skills";
 import { loadSlashCommands } from "../extensibility/slash-commands";
@@ -431,10 +428,7 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 }
 
 /** Format allowlisted projection fields for the anchored interactive todo HUD. */
-export function renderTodoProjectionLines(
-	projections: readonly NamespacedTodoProjection[],
-	columns: number,
-): string[] {
+export function renderTodoProjectionLines(projections: readonly NamespacedTodoProjection[], columns: number): string[] {
 	const checkbox = theme.checkbox;
 	const formatProjectionText = (value: string, maxWidth: number): string =>
 		truncateToWidth(replaceTabs(sanitizeText(value)).replace(/[\r\n]+/g, " "), Math.max(1, maxWidth));
@@ -2090,13 +2084,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#observerUiSyncNeedsTodoReconcile = false;
 	}
 
-
 	#renderTodoList(): void {
 		this.todoContainer.clear();
 		const phases = this.todoPhases.filter(phase => phase.tasks.length > 0);
-		const projections = this.viewSession.getTodoProjections().filter(projection =>
-			projection.phases.some(phase => phase.tasks.length > 0),
-		);
+		const projections = this.viewSession
+			.getTodoProjections()
+			.filter(projection => projection.phases.some(phase => phase.tasks.length > 0));
 		if (phases.length === 0) {
 			const projectionLines = renderTodoProjectionLines(projections, this.ui.terminal.columns);
 			if (projectionLines.length > 0) this.todoContainer.addChild(new Text(projectionLines.join("\n"), 1, 0));

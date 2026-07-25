@@ -1,8 +1,5 @@
 import { beforeAll, describe, expect, it } from "bun:test";
-import {
-	TodoProjectionStore,
-	type TodoProjectionPhase,
-} from "../src/extensibility/extensions/todo-projection";
+import { type TodoProjectionPhase, TodoProjectionStore } from "../src/extensibility/extensions/todo-projection";
 import { renderTodoProjectionLines } from "../src/modes/interactive-mode";
 import { initTheme } from "../src/modes/theme/theme";
 import { assistantMsg, createTestSession, userMsg } from "./utilities";
@@ -20,7 +17,9 @@ describe("TodoProjectionStore", () => {
 	it("keeps concurrent namespaces separate and replaces only the addressed namespace", () => {
 		const store = new TodoProjectionStore();
 		store.set("zeta", [phase("pending")]);
-		store.set("alpha", [{ id: "other", name: "Other", tasks: [{ id: "three", content: "Third", status: "failed" }] }]);
+		store.set("alpha", [
+			{ id: "other", name: "Other", tasks: [{ id: "three", content: "Third", status: "failed" }] },
+		]);
 
 		expect(store.snapshot().map(item => item.namespace)).toEqual(["alpha", "zeta"]);
 		expect(store.snapshot()[1]?.phases[0]?.tasks.filter(task => task.status === "in_progress")).toHaveLength(1);
@@ -34,22 +33,29 @@ describe("TodoProjectionStore", () => {
 
 	it("supports every terminal state and clones away caller metadata", () => {
 		const store = new TodoProjectionStore();
-		const source = [{
-			id: "phase",
-			name: "Lifecycle",
-			tasks: ["pending", "in_progress", "completed", "failed", "cancelled", "abandoned"].map(status => ({
-				id: status,
-				content: status,
-				status,
-				secret: "must-not-render",
-			})),
-		}];
+		const source = [
+			{
+				id: "phase",
+				name: "Lifecycle",
+				tasks: ["pending", "in_progress", "completed", "failed", "cancelled", "abandoned"].map(status => ({
+					id: status,
+					content: status,
+					status,
+					secret: "must-not-render",
+				})),
+			},
+		];
 		store.set("owner", source as unknown as TodoProjectionPhase[]);
 		source[0]!.tasks[0] = { id: "mutated", content: "mutated", status: "failed", secret: "changed" };
 
 		const snapshot = store.snapshot();
 		expect(snapshot[0]?.phases[0]?.tasks.map(task => task.status)).toEqual([
-			"pending", "in_progress", "completed", "failed", "cancelled", "abandoned",
+			"pending",
+			"in_progress",
+			"completed",
+			"failed",
+			"cancelled",
+			"abandoned",
 		]);
 		expect(snapshot[0]?.phases[0]?.tasks[0]).toEqual({ id: "pending", content: "pending", status: "pending" });
 	});
@@ -68,14 +74,18 @@ describe("TodoProjectionStore", () => {
 		const store = new TodoProjectionStore();
 		expect(() => store.set(" ", [])).toThrow("namespace");
 		expect(() => store.set("owner", [{ id: "", name: "Phase", tasks: [] }])).toThrow("phase id");
-		expect(() => store.set("owner", [{
-			id: "phase",
-			name: "Phase",
-			tasks: [
-				{ id: "same", content: "One", status: "pending" },
-				{ id: "same", content: "Two", status: "in_progress" },
-			],
-		}])).toThrow("Duplicate todo projection task id");
+		expect(() =>
+			store.set("owner", [
+				{
+					id: "phase",
+					name: "Phase",
+					tasks: [
+						{ id: "same", content: "One", status: "pending" },
+						{ id: "same", content: "Two", status: "in_progress" },
+					],
+				},
+			]),
+		).toThrow("Duplicate todo projection task id");
 	});
 });
 
@@ -87,16 +97,18 @@ describe("todo projection integration", () => {
 	it("renders every status, multiple active items, and only allowlisted fields", () => {
 		const store = new TodoProjectionStore();
 		store.set("zeta", [phase("in_progress")]);
-		store.set("alpha", [{
-			id: "lifecycle",
-			name: "Lifecycle",
-			tasks: ["pending", "in_progress", "completed", "failed", "cancelled", "abandoned"].map(status => ({
-				id: status,
-				content: `task-${status}`,
-				status,
-				secret: "must-not-render",
-			})),
-		}] as unknown as TodoProjectionPhase[]);
+		store.set("alpha", [
+			{
+				id: "lifecycle",
+				name: "Lifecycle",
+				tasks: ["pending", "in_progress", "completed", "failed", "cancelled", "abandoned"].map(status => ({
+					id: status,
+					content: `task-${status}`,
+					status,
+					secret: "must-not-render",
+				})),
+			},
+		] as unknown as TodoProjectionPhase[]);
 
 		const rendered = Bun.stripANSI(renderTodoProjectionLines(store.snapshot(), 120).join("\n"));
 		expect(rendered.indexOf("alpha")).toBeLessThan(rendered.indexOf("zeta"));
@@ -110,15 +122,19 @@ describe("todo projection integration", () => {
 
 	it("sanitizes ANSI, control bytes, tabs, and newlines in extension-owned labels", () => {
 		const store = new TodoProjectionStore();
-		store.set("owner\x1b[2J\tname\nnamespace-injected\u0007", [{
-			id: "phase",
-			name: "phase\x1b]0;owned\u0007\tname\nphase-injected\u009b",
-			tasks: [{
-				id: "task",
-				content: "task\x1b[31m\tcontent\x1b[0m\ntask-injected\u0000",
-				status: "in_progress",
-			}],
-		}]);
+		store.set("owner\x1b[2J\tname\nnamespace-injected\u0007", [
+			{
+				id: "phase",
+				name: "phase\x1b]0;owned\u0007\tname\nphase-injected\u009b",
+				tasks: [
+					{
+						id: "task",
+						content: "task\x1b[31m\tcontent\x1b[0m\ntask-injected\u0000",
+						status: "in_progress",
+					},
+				],
+			},
+		]);
 
 		const renderedLines = renderTodoProjectionLines(store.snapshot(), 120);
 		const rendered = renderedLines.join("\n");
@@ -137,11 +153,13 @@ describe("todo projection integration", () => {
 	it("truncates every extension-owned projected label to the available HUD width", () => {
 		const long = "x".repeat(200);
 		const store = new TodoProjectionStore();
-		store.set(`namespace-${long}`, [{
-			id: "phase",
-			name: `phase-${long}`,
-			tasks: [{ id: "task", content: `task-${long}`, status: "completed" }],
-		}]);
+		store.set(`namespace-${long}`, [
+			{
+				id: "phase",
+				name: `phase-${long}`,
+				tasks: [{ id: "task", content: `task-${long}`, status: "completed" }],
+			},
+		]);
 
 		const lines = renderTodoProjectionLines(store.snapshot(), 24).map(line => Bun.stripANSI(line));
 
@@ -154,10 +172,12 @@ describe("todo projection integration", () => {
 		const ctx = await createTestSession({ inMemory: true });
 		const other = await createTestSession({ inMemory: true });
 		try {
-			const nativePhases = [{
-				name: "User plan",
-				tasks: [{ content: "Authored by user", status: "in_progress" as const }],
-			}];
+			const nativePhases = [
+				{
+					name: "User plan",
+					tasks: [{ content: "Authored by user", status: "in_progress" as const }],
+				},
+			];
 			ctx.session.setTodoPhases(nativePhases);
 			const entriesBefore = ctx.sessionManager.getEntries();
 			let projectionEvents = 0;
@@ -170,8 +190,9 @@ describe("todo projection integration", () => {
 
 			expect(ctx.session.getTodoPhases()).toEqual(nativePhases);
 			expect(ctx.sessionManager.getEntries()).toEqual(entriesBefore);
-			expect(ctx.session.getTodoProjections()[0]?.phases[0]?.tasks.filter(task => task.status === "in_progress"))
-				.toHaveLength(2);
+			expect(
+				ctx.session.getTodoProjections()[0]?.phases[0]?.tasks.filter(task => task.status === "in_progress"),
+			).toHaveLength(2);
 			expect(ctx.session.getTodoProjections()).toHaveLength(1);
 			expect(other.session.getTodoProjections()).toEqual([]);
 			expect(projectionEvents).toBe(1);

@@ -1,10 +1,4 @@
-export type TodoProjectionStatus =
-	| "pending"
-	| "in_progress"
-	| "completed"
-	| "failed"
-	| "cancelled"
-	| "abandoned";
+export type TodoProjectionStatus = "pending" | "in_progress" | "completed" | "failed" | "cancelled" | "abandoned";
 
 /** A host-rendered todo owned by an extension namespace. */
 export interface TodoProjectionItem {

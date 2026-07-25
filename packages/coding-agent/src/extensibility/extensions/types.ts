@@ -100,9 +100,9 @@ import type {
 	TurnEndEvent,
 	TurnStartEvent,
 } from "../shared-events";
-import type { TodoProjectionPhase } from "./todo-projection";
 import type { SlashCommandInfo } from "../slash-commands";
 import type * as TypeBox from "../typebox";
+import type { TodoProjectionPhase } from "./todo-projection";
 
 export type { AppKeybinding, KeybindingsManager } from "../../config/keybindings";
 export type { ExecOptions, ExecResult } from "../../exec/exec";

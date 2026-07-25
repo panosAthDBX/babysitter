@@ -34,6 +34,7 @@ import { getAllPluginExtensionPaths } from "../plugins/loader";
 import * as TypeBox from "../typebox";
 
 import { resolvePath, withHostGuard } from "../utils";
+import type { TodoProjectionPhase } from "./todo-projection";
 import type {
 	AssistantThinkingRenderer,
 	Extension,
@@ -47,7 +48,6 @@ import type {
 	RegisteredCommand,
 	ToolDefinition,
 } from "./types";
-import type { TodoProjectionPhase } from "./todo-projection";
 
 installLegacyPiSpecifierShim();
 

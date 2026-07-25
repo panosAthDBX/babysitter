@@ -330,7 +330,6 @@ import { TtsrCoordinator, type TtsrCoordinatorHost } from "./ttsr-coordinator";
 
 const PLAN_MODE_REMINDER_MAX = 3;
 
-
 /** Internal marker for hook messages queued through the agent loop */
 // ============================================================================
 // Constants
