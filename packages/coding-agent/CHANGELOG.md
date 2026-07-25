@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added the `setTodoProjection()` coding-agent extension API for namespaced, display-only lifecycle progress that stays isolated from native session todos and transcript state ([#6522](https://github.com/can1357/oh-my-pi/pull/6522) by [@panosAthDBX](https://github.com/panosAthDBX)).
+- Added the `setTodoProjection()` coding-agent extension API for namespaced, display-only lifecycle progress that stays isolated from native session todos and transcript state; RPC clients receive defensive projection snapshots, including projections published by `session_start` handlers ([#6522](https://github.com/can1357/oh-my-pi/pull/6522) by [@panosAthDBX](https://github.com/panosAthDBX)).
 ## [17.1.3] - 2026-07-24
 
 ### Fixed

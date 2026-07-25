@@ -391,6 +391,7 @@ Common event types:
 - `ttsr_triggered`
 - `todo_reminder`
 - `todo_auto_clear`
+- `todo_projection_changed` with a defensive `projections` snapshot containing every namespaced extension projection; startup projections are emitted after `ready`
 
 Extension runner errors are emitted separately as:
 

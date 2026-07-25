@@ -5740,7 +5740,9 @@ export class AgentSession {
 	 * The projection is cloned and stripped to its public display fields.
 	 */
 	setTodoProjection(namespace: string, phases: readonly TodoProjectionPhase[] | undefined): void {
-		if (this.#todoProjections.set(namespace, phases)) this.#emit({ type: "todo_projection_changed" });
+		if (this.#todoProjections.set(namespace, phases)) {
+			this.#emit({ type: "todo_projection_changed", projections: this.getTodoProjections() });
+		}
 	}
 
 	/** Return deterministic, defensive snapshots for host rendering. */
@@ -5750,7 +5752,9 @@ export class AgentSession {
 
 	/** Remove every derived projection in the current host session. */
 	clearTodoProjections(): void {
-		if (this.#todoProjections.clear()) this.#emit({ type: "todo_projection_changed" });
+		if (this.#todoProjections.clear()) {
+			this.#emit({ type: "todo_projection_changed", projections: [] });
+		}
 	}
 
 	#buildReplanTitleContext(): string {

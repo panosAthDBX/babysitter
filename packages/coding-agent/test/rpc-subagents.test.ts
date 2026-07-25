@@ -11,6 +11,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode";
 import { RpcSubagentRegistry, readRpcSubagentTranscript } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-subagents";
 import type { RpcSubagentFrame } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
+import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import {
 	type AgentProgress,
 	type SubagentEventPayload,
@@ -21,7 +22,7 @@ import {
 	TASK_SUBAGENT_PROGRESS_CHANNEL,
 } from "@oh-my-pi/pi-coding-agent/task";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
-import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
+import { removeSyncWithRetries, withTimeout } from "@oh-my-pi/pi-utils";
 
 const tempPaths: string[] = [];
 
@@ -410,7 +411,7 @@ function handle(frame) {
 	if (frame.type === "prompt") {
 		write({ id: frame.id, type: "response", command: "prompt", success: true });
 		write({ type: "notice", level: "info", message: "subagent test" });
-		write({ type: "todo_projection_changed" });
+		write({ type: "todo_projection_changed", projections: [] });
 		write({ type: "subagent_lifecycle", payload: { id: "SubagentA", index: 0, agent: "task", agentSource: "bundled", status: "started", sessionFile: "/tmp/subagent.jsonl" } });
 		write({ type: "subagent_progress", payload: { index: 0, agent: "task", agentSource: "bundled", task: "Do work", assignment: "Implement work", sessionFile: "/tmp/subagent.jsonl", progress } });
 		write({ type: "subagent_event", payload: { id: "SubagentA", event: { type: "agent_start" } } });
@@ -443,5 +444,61 @@ function handle(frame) {
 		expect(rawEventTypes).toEqual(["agent_start"]);
 		expect(sessionEventTypes).toContain("notice");
 		expect(sessionEventTypes).toContain("todo_projection_changed");
+	});
+
+	test("delivers startup projection snapshots through session events", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-rpc-startup-projection-"));
+		tempPaths.push(tempDir);
+		const extensionPath = path.join(tempDir, "startup-projection.ts");
+		await Bun.write(
+			extensionPath,
+			`
+export default function (pi) {
+	pi.on("session_start", () => {
+		pi.setTodoProjection("rpc-startup", [{
+			id: "startup-phase",
+			name: "Startup",
+			tasks: [{ id: "startup-task", content: "Published before command handling", status: "in_progress" }]
+		}]);
+	});
+}
+`,
+		);
+
+		const { promise, resolve } =
+			Promise.withResolvers<Extract<AgentSessionEvent, { type: "todo_projection_changed" }>>();
+		using client = new RpcClient({
+			cliPath: path.join(import.meta.dir, "..", "src", "cli.ts"),
+			cwd: path.join(import.meta.dir, ".."),
+			env: { PI_CODING_AGENT_DIR: path.join(tempDir, "agent"), PI_NO_TITLE: "1" },
+			provider: "anthropic",
+			model: "claude-sonnet-4-5",
+			args: ["--extension", extensionPath],
+		});
+		client.onSessionEvent(event => {
+			if (event.type === "todo_projection_changed") resolve(event);
+		});
+
+		await client.start();
+		const event = await withTimeout(promise, 10_000, "startup projection event never reached RpcClient");
+
+		expect(event.projections).toEqual([
+			{
+				namespace: "rpc-startup",
+				phases: [
+					{
+						id: "startup-phase",
+						name: "Startup",
+						tasks: [
+							{
+								id: "startup-task",
+								content: "Published before command handling",
+								status: "in_progress",
+							},
+						],
+					},
+				],
+			},
+		]);
 	});
 });

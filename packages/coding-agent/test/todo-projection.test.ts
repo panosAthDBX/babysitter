@@ -1,5 +1,9 @@
 import { beforeAll, describe, expect, it } from "bun:test";
-import { type TodoProjectionPhase, TodoProjectionStore } from "../src/extensibility/extensions/todo-projection";
+import {
+	type NamespacedTodoProjection,
+	type TodoProjectionPhase,
+	TodoProjectionStore,
+} from "../src/extensibility/extensions/todo-projection";
 import { renderTodoProjectionLines } from "../src/modes/interactive-mode";
 import { initTheme } from "../src/modes/theme/theme";
 import { PREVIEW_LIMITS } from "../src/tools/render-utils";
@@ -209,8 +213,12 @@ describe("todo projection integration", () => {
 			ctx.session.setTodoPhases(nativePhases);
 			const entriesBefore = ctx.sessionManager.getEntries();
 			let projectionEvents = 0;
+			const projectionSnapshots: (readonly NamespacedTodoProjection[])[] = [];
 			const unsubscribe = ctx.session.subscribe(event => {
-				if (event.type === "todo_projection_changed") projectionEvents++;
+				if (event.type === "todo_projection_changed") {
+					projectionEvents++;
+					projectionSnapshots.push(event.projections);
+				}
 			});
 
 			ctx.session.setTodoProjection("babysitter", [phase("in_progress")]);
@@ -224,10 +232,16 @@ describe("todo projection integration", () => {
 			expect(ctx.session.getTodoProjections()).toHaveLength(1);
 			expect(other.session.getTodoProjections()).toEqual([]);
 			expect(projectionEvents).toBe(1);
+			expect(projectionSnapshots[0]).toEqual(ctx.session.getTodoProjections());
+			const eventTask = projectionSnapshots[0]?.[0]?.phases[0]?.tasks[0];
+			expect(eventTask).toBeDefined();
+			Reflect.set(eventTask!, "content", "Mutated event snapshot");
+			expect(ctx.session.getTodoProjections()[0]?.phases[0]?.tasks[0]?.content).toBe("First effect");
 
 			await ctx.session.newSession();
 			expect(ctx.session.getTodoProjections()).toEqual([]);
 			expect(projectionEvents).toBe(2);
+			expect(projectionSnapshots[1]).toEqual([]);
 			unsubscribe();
 		} finally {
 			await Promise.all([ctx.cleanup(), other.cleanup()]);
