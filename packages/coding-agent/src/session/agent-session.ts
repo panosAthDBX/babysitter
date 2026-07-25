@@ -1428,6 +1428,7 @@ export class AgentSession {
 				this.#scheduledHiddenNextTurnGeneration = undefined;
 			},
 			resetTodoCycle: () => this.#todo.resetCycle(),
+			clearTodoProjections: () => this.clearTodoProjections(),
 			buildDisplaySessionContext: () => this.buildDisplaySessionContext(),
 			resetAdvisorRuntimes: () => this.#advisors.resetAllRuntimes(),
 			syncTodoPhasesFromBranch: () => this.#todo.syncFromBranch(),
@@ -6262,10 +6263,8 @@ export class AgentSession {
 	 * @param options Handoff execution options
 	 * @returns The handoff document text, or undefined if cancelled/failed
 	 */
-	async handoff(customInstructions?: string, options?: SessionHandoffOptions): Promise<HandoffResult | undefined> {
-		const result = await this.#handoff.handoff(customInstructions, options);
-		if (result) this.clearTodoProjections();
-		return result;
+	handoff(customInstructions?: string, options?: SessionHandoffOptions): Promise<HandoffResult | undefined> {
+		return this.#handoff.handoff(customInstructions, options);
 	}
 
 	#isTerminalYieldToolResult(event: { toolName: string; isError?: boolean; result?: { details?: unknown } }): boolean {

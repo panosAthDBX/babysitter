@@ -172,7 +172,6 @@ describe("InteractiveMode todo HUD persistence", () => {
 			status: "running",
 		});
 
-		await mode.focusAgentSession(FOCUSED_AGENT_ID);
 		focusedSession.setTodoProjection("focused-projection", [
 			{
 				id: "focused-phase",
@@ -180,10 +179,15 @@ describe("InteractiveMode todo HUD persistence", () => {
 				tasks: [{ id: "focused-task", content: "Focused task", status: "in_progress" }],
 			},
 		]);
+		await mode.focusAgentSession(FOCUSED_AGENT_ID);
 
 		expect(renderTodos(mode)).toContain("focused-projection");
 		expect(renderTodos(mode)).toContain("Focused task");
 		expect(renderTodos(mode)).not.toContain("main-projection");
+
+		await mode.unfocusSession();
+		expect(renderTodos(mode)).toContain("main-projection");
+		expect(renderTodos(mode)).not.toContain("focused-projection");
 	});
 
 	it("marks todos complete when subagent reconciliation reports a finished agent", async () => {

@@ -63,6 +63,7 @@ export interface SessionHandoffHost {
 	resetMemoryContextForNewTranscript(): Promise<void>;
 	clearPendingNextTurnMessages(): void;
 	resetTodoCycle(): void;
+	clearTodoProjections(): void;
 	buildDisplaySessionContext(): SessionContext;
 	resetAdvisorRuntimes(): void;
 	syncTodoPhasesFromBranch(): void;
@@ -286,6 +287,7 @@ export class SessionHandoff {
 			this.#host.agent.replaceMessages(sessionContext.messages);
 			this.#host.resetAdvisorRuntimes();
 			this.#host.syncTodoPhasesFromBranch();
+			this.#host.clearTodoProjections();
 			if (this.#host.extensionRunner) {
 				await this.#host.extensionRunner.emit({
 					type: "session_switch",

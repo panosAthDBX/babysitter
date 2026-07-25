@@ -119,7 +119,7 @@ import type { ConfiguredThinkingLevel } from "../thinking";
 import { tinyTitleClient } from "../tiny/title-client";
 import type { LspStartupServerInfo } from "../tools";
 import { normalizeLocalScheme } from "../tools/path-utils";
-import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
+import { PREVIEW_LIMITS, replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
 import {
 	formatPhaseDisplayName,
@@ -452,21 +452,49 @@ export function renderTodoProjectionLines(projections: readonly NamespacedTodoPr
 				return theme.fg("dim", `${checkbox.unchecked} ${content}`);
 		}
 	};
-	const lines: string[] = [];
+	let totalRows = 0;
 	for (const projection of projections) {
-		const namespace = formatProjectionText(projection.namespace, Math.min(TRUNCATE_LENGTHS.TITLE, columns));
-		lines.push("", theme.bold(theme.fg("accent", namespace)));
+		let hasVisiblePhase = false;
 		for (const phase of projection.phases) {
 			if (phase.tasks.length === 0) continue;
-			const done = phase.tasks.filter(task => task.status === "completed").length;
+			hasVisiblePhase = true;
+			totalRows += 1 + phase.tasks.length;
+		}
+		if (hasVisiblePhase) totalRows++;
+	}
+	const lines: string[] = [];
+	let visibleRows = 0;
+	for (const projection of projections) {
+		if (visibleRows >= PREVIEW_LIMITS.COLLAPSED_ITEMS) break;
+		if (!projection.phases.some(phase => phase.tasks.length > 0)) continue;
+		const namespace = formatProjectionText(projection.namespace, Math.min(TRUNCATE_LENGTHS.TITLE, columns));
+		lines.push("", theme.bold(theme.fg("accent", namespace)));
+		visibleRows++;
+		for (const phase of projection.phases) {
+			if (visibleRows >= PREVIEW_LIMITS.COLLAPSED_ITEMS) break;
+			if (phase.tasks.length === 0) continue;
+			let done = 0;
+			for (const task of phase.tasks) {
+				if (task.status === "completed") done++;
+			}
 			const progress = ` · ${done}/${phase.tasks.length}`;
 			const phaseName = formatProjectionText(
 				phase.name,
 				Math.min(TRUNCATE_LENGTHS.TITLE, columns - 1 - visibleWidth(progress)),
 			);
 			lines.push(` ${theme.fg("muted", phaseName)}${theme.fg("dim", progress)}`);
-			for (const task of phase.tasks) lines.push(`   ${formatTask(task)}`);
+			visibleRows++;
+			for (const task of phase.tasks) {
+				if (visibleRows >= PREVIEW_LIMITS.COLLAPSED_ITEMS) break;
+				lines.push(`   ${formatTask(task)}`);
+				visibleRows++;
+			}
 		}
+	}
+	const hiddenRows = totalRows - visibleRows;
+	if (hiddenRows > 0) {
+		const label = `… ${hiddenRows} more projected row${hiddenRows === 1 ? "" : "s"}`;
+		lines.push(theme.fg("dim", formatProjectionText(label, columns)));
 	}
 	return lines;
 }

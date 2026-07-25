@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { type TodoProjectionPhase, TodoProjectionStore } from "../src/extensibility/extensions/todo-projection";
 import { renderTodoProjectionLines } from "../src/modes/interactive-mode";
 import { initTheme } from "../src/modes/theme/theme";
+import { PREVIEW_LIMITS } from "../src/tools/render-utils";
 import { assistantMsg, createTestSession, userMsg } from "./utilities";
 
 const phase = (status: TodoProjectionPhase["tasks"][number]["status"]): TodoProjectionPhase => ({
@@ -96,7 +97,6 @@ describe("todo projection integration", () => {
 
 	it("renders every status, multiple active items, and only allowlisted fields", () => {
 		const store = new TodoProjectionStore();
-		store.set("zeta", [phase("in_progress")]);
 		store.set("alpha", [
 			{
 				id: "lifecycle",
@@ -111,12 +111,16 @@ describe("todo projection integration", () => {
 		] as unknown as TodoProjectionPhase[]);
 
 		const rendered = Bun.stripANSI(renderTodoProjectionLines(store.snapshot(), 120).join("\n"));
-		expect(rendered.indexOf("alpha")).toBeLessThan(rendered.indexOf("zeta"));
+		const orderStore = new TodoProjectionStore();
+		orderStore.set("zeta", [phase("in_progress")]);
+		orderStore.set("alpha", [phase("in_progress")]);
+		const ordered = Bun.stripANSI(renderTodoProjectionLines(orderStore.snapshot(), 120).join("\n"));
+		expect(ordered.indexOf("alpha")).toBeLessThan(ordered.indexOf("zeta"));
 		for (const status of ["pending", "in_progress", "completed", "failed", "cancelled", "abandoned"]) {
 			expect(rendered).toContain(`task-${status}`);
 		}
-		expect(rendered).toContain("First effect");
-		expect(rendered).toContain("Second effect");
+		expect(ordered).toContain("First effect");
+		expect(ordered).toContain("Second effect");
 		expect(rendered).not.toContain("must-not-render");
 	});
 
@@ -166,6 +170,30 @@ describe("todo projection integration", () => {
 		expect(lines).toHaveLength(4);
 		for (const line of lines.filter(Boolean)) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(24);
 		expect(lines.join("\n")).not.toContain(long);
+	});
+
+	it("bounds projected HUD rows with the shared preview limit and summarizes omitted work", () => {
+		const taskCount = PREVIEW_LIMITS.COLLAPSED_ITEMS * 2;
+		const store = new TodoProjectionStore();
+		store.set("bounded", [
+			{
+				id: "large-phase",
+				name: "Large phase",
+				tasks: Array.from({ length: taskCount }, (_, index) => ({
+					id: `task-${index}`,
+					content: `Projected task ${index}`,
+					status: "pending" as const,
+				})),
+			},
+		]);
+
+		const lines = renderTodoProjectionLines(store.snapshot(), 120).map(line => Bun.stripANSI(line));
+		const rendered = lines.join("\n");
+
+		expect(lines).toHaveLength(PREVIEW_LIMITS.COLLAPSED_ITEMS + 2);
+		expect(rendered).toContain("Projected task 0");
+		expect(rendered).not.toContain(`Projected task ${PREVIEW_LIMITS.COLLAPSED_ITEMS - 2}`);
+		expect(rendered).toContain(`… ${PREVIEW_LIMITS.COLLAPSED_ITEMS + 2} more projected rows`);
 	});
 
 	it("keeps canonical todos and transcript entries isolated and clears on a new session", async () => {

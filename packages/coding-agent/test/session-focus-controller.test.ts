@@ -50,6 +50,7 @@ interface Harness {
 		resetTranscriptAnchors: () => number;
 		renderInitialMessages: () => number;
 		mainUnsubscribe: () => number;
+		refreshTodoProjections: () => number;
 	};
 }
 
@@ -61,6 +62,7 @@ function makeHarness(): Harness {
 	let resetTranscriptAnchors = 0;
 	let renderInitialMessages = 0;
 	let mainUnsubscribe = 0;
+	let refreshTodoProjections = 0;
 
 	const ctx = {
 		session: main.session,
@@ -87,6 +89,9 @@ function makeHarness(): Harness {
 		renderInitialMessages: () => {
 			renderInitialMessages++;
 		},
+		refreshTodoProjections: () => {
+			refreshTodoProjections++;
+		},
 		updateEditorBorderColor() {},
 		ui: { requestRender() {} },
 		showStatus() {},
@@ -109,6 +114,7 @@ function makeHarness(): Harness {
 			resetTranscriptAnchors: () => resetTranscriptAnchors,
 			renderInitialMessages: () => renderInitialMessages,
 			mainUnsubscribe: () => mainUnsubscribe,
+			refreshTodoProjections: () => refreshTodoProjections,
 		},
 	};
 }
@@ -136,6 +142,7 @@ describe("SessionFocusController", () => {
 		expect(h.counts.clearTransientSessionUi()).toBe(1);
 		expect(h.counts.resetTranscriptAnchors()).toBe(1);
 		expect(h.counts.renderInitialMessages()).toBe(1);
+		expect(h.counts.refreshTodoProjections()).toBe(1);
 		expect(h.setSessionCalls).toEqual([[worker.session, "Worker"]]);
 
 		const event = { type: "message_start", message: { role: "user" } };
