@@ -3,7 +3,7 @@
  */
 
 import * as AIError from "../../error";
-import { claudeCodeVersion } from "../../providers/anthropic";
+import { claudeCodeVersion } from "../../providers/claude-code-fingerprint";
 import type { FetchImpl } from "../../types";
 import { OAuthCallbackFlow } from "./callback-server";
 import { generatePKCE } from "./pkce";
@@ -15,6 +15,7 @@ const AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
 const TOKEN_URL = "https://api.anthropic.com/v1/oauth/token";
 const BOOTSTRAP_URL = "https://api.anthropic.com/api/claude_cli/bootstrap";
 const CLAUDE_CODE_BOOTSTRAP_MODEL = "claude-opus-4-8";
+const CLAUDE_CODE_BOOTSTRAP_USER_AGENT = `claude-code/${claudeCodeVersion}`;
 const CALLBACK_PORT = 54545;
 const CALLBACK_PATH = "/callback";
 // Scopes required for direct OAuth-token inference (user:inference) plus account/session management.
@@ -22,6 +23,8 @@ const CALLBACK_PATH = "/callback";
 // grant user:inference — the claude.ai endpoint is required for direct inference access.
 const SCOPES =
 	"org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
+
+export { ANTHROPIC_OAUTH_GRANT_TTL_MS } from "./anthropic-constants";
 
 function formatErrorDetails(error: unknown): string {
 	if (error instanceof Error) {
@@ -143,7 +146,7 @@ async function fetchBootstrapIdentity(accessToken: string, fetchImpl: FetchImpl)
 			Accept: "application/json, text/plain, */*",
 			Authorization: `Bearer ${accessToken}`,
 			"Content-Type": "application/json",
-			"User-Agent": `claude-code/${claudeCodeVersion}`,
+			"User-Agent": CLAUDE_CODE_BOOTSTRAP_USER_AGENT,
 			"anthropic-beta": "oauth-2025-04-20",
 		},
 		signal: AbortSignal.timeout(30_000),
