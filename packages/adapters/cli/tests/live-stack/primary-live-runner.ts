@@ -36,6 +36,24 @@ export interface CommandResult {
   readonly stderr: string;
 }
 
+/**
+ * A non-fatal setup command (e.g. `adapters install`) may legitimately exit
+ * non-zero on an unreliable postinstall, so those exits are tolerated. But a
+ * "Cannot find module .../dist/..." / "GENTY STARTUP FAILED" signature means a
+ * BUILD ARTIFACT is missing or truncated (RC-2: a partial build-all-dist
+ * artifact lacking packages/genty/cli/dist). That is an infrastructure fault,
+ * never a legitimate runtime outcome, so it must fail the scenario fast with a
+ * clear message rather than being swallowed as "non-fatal — continuing" and
+ * resurfacing later as a confusing product-looking failure.
+ */
+export function isInfrastructureArtifactFault(result: CommandResult): boolean {
+  const text = `${result.stdout}\n${result.stderr}`;
+  const missingDistModule = /Cannot find module[^\n]*\bdist\b/i.test(text)
+    || /MODULE_NOT_FOUND[^\n]*\bdist\b/i.test(text);
+  const startupFailed = /GENTY STARTUP FAILED/i.test(text);
+  return missingDistModule || startupFailed;
+}
+
 export interface PrimaryLiveRunOptions {
   readonly env: Record<string, string | undefined>;
   readonly cwd: string;
@@ -231,15 +249,18 @@ fs.writeFileSync(p.join(dest,"inputs.json"),JSON.stringify({traceId,outputDir:p.
   }
 
   const processMode = options.env['LIVE_STACK_PROCESS_MODE'] ?? 'predefined';
-  // In the published-packages workflow the babysitter-sdk + hooks-adapter CLIs
-  // are installed globally from npm; re-installing them from local (unbuilt)
-  // source clobbers the global `babysitter` bin with a dangling dist/ symlink
-  // → `spawn babysitter ENOENT` at harness:install-plugin. Skip the local
-  // source installs in that mode and rely on the published globals.
+  // The SDK package owns the `babysitter` and `adapters-hooks` global bins and
+  // already depends on the hooks CLI package. Installing the hooks CLI again
+  // races npm's global bin linker and fails with EEXIST.
+  // Published-package lanes rely on their preinstalled global SDK.
   const usePublishedPackages = options.env['LIVE_STACK_PUBLISHED_PACKAGES'] === '1';
   const localSdkInstallCommands = usePublishedPackages ? [] : [
     commandExecution(commandEnv, 'LIVE_STACK_NPM_BIN', 'npm', ['install', '--global', './packages/babysitter-sdk'], options.cwd, SETUP_TIMEOUT_MS),
-    commandExecution(commandEnv, 'LIVE_STACK_NPM_BIN', 'npm', ['install', '--global', './packages/adapters/hooks/cli'], options.cwd, SETUP_TIMEOUT_MS),
+    // `--force`: babysitter-sdk and hooks-adapter-cli both declare an `adapters-hooks`
+    // bin (babysitter-sdk's re-execs hooks-adapter-cli's), so the second global install
+    // would otherwise fail with EEXIST on the already-linked shim. hooks-adapter-cli must
+    // still be installed for its `a5c-hooks-adapter` bin (not re-exported by babysitter-sdk).
+    commandExecution(commandEnv, 'LIVE_STACK_NPM_BIN', 'npm', ['install', '--global', '--force', './packages/adapters/hooks/cli'], options.cwd, SETUP_TIMEOUT_MS),
   ];
   const setupCommands = [
     commandExecution(commandEnv, 'LIVE_STACK_NPM_BIN', 'npm', ['run', 'generate:plugins'], options.cwd, SETUP_TIMEOUT_MS),
@@ -365,6 +386,14 @@ export async function runPrimaryLiveStackScenario(options: PrimaryLiveRunOptions
       // unreliable exit code; don't abort the scenario — continue and let the
       // behavior verifications judge whether the agent actually works.
       if (command.nonFatal) {
+        // A missing/truncated build artifact is an infra fault, not a tolerable
+        // postinstall exit — fail fast with a clear message (RC-2) instead of
+        // swallowing it and resurfacing later as a product-looking failure.
+        if (isInfrastructureArtifactFault(result)) {
+          const failure = `infrastructure fault: build artifact missing or truncated during "${command.command} ${command.args.join(' ')}" (exit ${result.status}). The dist bundle is incomplete (e.g. packages/genty/cli/dist) — this is NOT a product failure. stderr tail: ${result.stderr.slice(-300)}`;
+          const artifactPath = await writeScenarioArtifact(options.artifactsDir, scenario, { status: 'failed', failure, commands: redactCommands(commands) });
+          return { status: 'failed', scenarioId: scenario.scenarioId, commands: redactCommands(commands), artifactPath, failure };
+        }
         console.warn(`[live-stack] non-fatal command exited ${result.status} — continuing: ${command.command} ${command.args.join(' ')}`);
         continue;
       }
@@ -411,7 +440,13 @@ export async function runPrimaryLiveStackScenario(options: PrimaryLiveRunOptions
       }
 
       const artifactPath = await writeScenarioArtifact(options.artifactsDir, scenario, { status: 'failed', command: redactCommands([command])[0], commandResults });
-      return { status: 'failed', scenarioId: scenario.scenarioId, commands: redactCommands(commands), artifactPath, failure: `command failed: ${command.command} ${command.args.join(' ')}` };
+      // Surface the real stderr (tail) — a bare `command failed: <cmd>` hid the
+      // root cause of RC-1 (npm EEXIST on the adapters-hooks bin collision) and
+      // made it hard to diagnose. Redact before including so secrets never leak.
+      const stderrTail = String(redactLiveStackArtifact(result.stderr) ?? '').slice(-600).trim();
+      const stdoutTail = String(redactLiveStackArtifact(result.stdout) ?? '').slice(-200).trim();
+      const detail = stderrTail || stdoutTail;
+      return { status: 'failed', scenarioId: scenario.scenarioId, commands: redactCommands(commands), artifactPath, failure: `command failed: ${command.command} ${command.args.join(' ')} (exit ${result.status})${detail ? ` — ${detail}` : ''}` };
     }
   }
 
