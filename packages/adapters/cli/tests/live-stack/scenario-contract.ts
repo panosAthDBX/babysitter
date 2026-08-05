@@ -235,7 +235,6 @@ function setupCommandsFor(agentPath: LiveStackAgentPath, agent: LiveStackAgentId
     'npm run generate:plugins',
     `adapters install ${agentMuxAgent}`,
     'npm install --global ./packages/babysitter-sdk',
-    'npm install --global ./packages/adapters/hooks/cli',
     `babysitter harness:install-plugin ${agent}`,
     'mkdir -p .a5c-live-test',
     'cp fixtures/summarize-translate-test.mjs .a5c/processes/',

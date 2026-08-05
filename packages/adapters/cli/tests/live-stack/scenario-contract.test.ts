@@ -26,7 +26,6 @@ describe('live stack scenario contract primitives', () => {
       'npm run generate:plugins',
       'adapters install claude',
       'npm install --global ./packages/babysitter-sdk',
-      'npm install --global ./packages/adapters/hooks/cli',
       'babysitter harness:install-plugin claude-code',
       'mkdir -p .a5c-live-test',
       'cp fixtures/summarize-translate-test.mjs .a5c/processes/',
