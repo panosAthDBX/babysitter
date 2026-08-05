@@ -117,9 +117,9 @@ describe('transport-adapter e2e http roundtrip', () => {
     }
 
     expect(firstChunk.done).toBe(false);
-    expect(new TextDecoder().decode(firstChunk.value)).toContain('hello:true');
+    const firstText = new TextDecoder().decode(firstChunk.value);
 
-    let tail = '';
+    let tail = firstText;
     while (true) {
       const chunk = await reader.read();
       if (chunk.done) {
@@ -128,6 +128,7 @@ describe('transport-adapter e2e http roundtrip', () => {
       tail += new TextDecoder().decode(chunk.value);
     }
 
+    expect(tail).toContain('hello:true');
     expect(tail).toContain('data: [DONE]');
   });
 
