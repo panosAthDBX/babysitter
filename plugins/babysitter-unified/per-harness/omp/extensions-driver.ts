@@ -50,6 +50,11 @@ interface ShellExecutionResult {
   finishedAt: string;
 }
 
+interface ShellCommandOutput {
+  path: string;
+  before: string | null;
+}
+
 export type DriverProgressStage =
   | "iteration"
   | "discovery"
@@ -717,7 +722,7 @@ export class OmpDeterministicDriver {
       if (!isAlreadyExists(error)) throw error;
       checkpoint = await readJson<ExecutionCheckpoint>(checkpointFile);
       validateCheckpointIdentity(checkpoint, action);
-      const recovered = await this.recoverCompletedOutput(runDir, checkpoint);
+      const recovered = await this.recoverCompletedOutput(runDir, checkpoint, signal);
       if (!recovered) {
         const state = checkpoint.state === "completed" ? "completed" : "in-progress";
         throw new DriverError(
@@ -732,16 +737,25 @@ export class OmpDeterministicDriver {
     }
 
     await this.emitProgress(runDir, "shell_start", "running", "Starting bounded shell effect", action);
+    const commandOutput = await shellCommandOutputFingerprint(runDir, action);
     const shellResult = await this.executeShell(action, this.workspaceCwd, signal);
     const stdoutPath = effectArtifactPath(runDir, action.effectId, "stdout.log");
     const stderrPath = effectArtifactPath(runDir, action.effectId, "stderr.log");
     await writeTextAtomic(stdoutPath, shellResult.stdout);
     await writeTextAtomic(stderrPath, shellResult.stderr);
-
-    const outputPath = effectArtifactPath(runDir, action.effectId, "output.json");
     const shell = readObject(action.taskDef?.shell) ?? readObject(action.taskDef?.metadata) ?? {};
     const expectedExitCode = typeof shell.expectedExitCode === "number" ? shell.expectedExitCode : 0;
-    const value = await shellResultValue(runDir, action, shellResult, outputPath);
+    if (shellResult.timedOut || shellResult.exitCode !== expectedExitCode) {
+      throw new DriverError(
+        shellResult.timedOut
+          ? `Shell command timed out for effect ${action.effectId}`
+          : `Shell command exited with code ${shellResult.exitCode}; expected ${expectedExitCode} for effect ${action.effectId}`,
+        action.effectId,
+      );
+    }
+
+    const outputPath = effectArtifactPath(runDir, action.effectId, "output.json");
+    const value = await shellResultValue(action, shellResult, commandOutput);
     await writeImmutableJson(outputPath, value);
     const outputBytes = await fs.readFile(outputPath);
     checkpoint = {
@@ -921,8 +935,8 @@ export class OmpDeterministicDriver {
   private async recoverCompletedOutput(
     runDir: string,
     checkpoint: ExecutionCheckpoint,
+    signal?: AbortSignal,
   ): Promise<ExecutionCheckpoint | null> {
-    if (checkpoint.kind === "shell" && checkpoint.state !== "completed") return null;
     const outputPath = effectArtifactPath(runDir, checkpoint.effectId, "output.json");
     let bytes: Buffer;
     try {
@@ -943,6 +957,9 @@ export class OmpDeterministicDriver {
       outputRef: checkpoint.outputRef ?? taskRelativeRef(checkpoint.effectId, "output.json"),
       outputSha256: checkpoint.outputSha256 ?? sha256(bytes),
     };
+    if (checkpoint.kind === "shell" && checkpoint.state !== "completed") {
+      if (!await this.hasCommittedResult(runDir, completed, signal)) return null;
+    }
     if (checkpoint.state !== "completed" || checkpoint.outputRef !== completed.outputRef || !checkpoint.outputSha256) {
       await writeJsonAtomic(executionPath(runDir, checkpoint.effectId), completed);
     }
@@ -1549,46 +1566,68 @@ function validateJsonSchema(value: unknown, schema: JsonObject | undefined): str
   }
 }
 
-async function shellResultValue(
+async function shellCommandOutputFingerprint(
   runDir: string,
   action: EffectAction,
-  result: ShellExecutionResult,
-  driverOutputPath: string,
-): Promise<unknown> {
+): Promise<ShellCommandOutput | null> {
   const shell = readObject(action.taskDef?.shell) ?? readObject(action.taskDef?.metadata) ?? {};
-  const expectedExitCode = typeof shell.expectedExitCode === "number" ? shell.expectedExitCode : 0;
-  if (!result.timedOut && result.exitCode === expectedExitCode) {
-    const io = readObject(action.taskDef?.io);
-    if (typeof io?.outputJsonPath === "string") {
-      const configuredOutputPath = resolveRunRelative(runDir, io.outputJsonPath);
-      if (path.resolve(configuredOutputPath) !== path.resolve(driverOutputPath)) {
-        let bytes: Buffer;
-        try {
-          bytes = await fs.readFile(configuredOutputPath);
-        } catch (error) {
-          if (isNotFound(error)) return result.stdout;
-          throw error;
-        }
-        if (bytes.length > MAX_CAPTURE_BYTES) {
-          throw new DriverError(`Shell output JSON for effect ${action.effectId} exceeds ${MAX_CAPTURE_BYTES} bytes`, action.effectId);
-        }
-        return JSON.parse(bytes.toString("utf8"));
-      }
-    }
-    return result.stdout;
+  if (typeof shell.outputPath !== "string") return null;
+
+  const outputPath = resolveRunRelative(runDir, shell.outputPath);
+  const io = readObject(action.taskDef?.io);
+  if (
+    typeof io?.outputJsonPath === "string" &&
+    path.resolve(resolveRunRelative(runDir, io.outputJsonPath)) !== path.resolve(outputPath)
+  ) {
+    throw new DriverError(`Ambiguous shell output paths for effect ${action.effectId}`, action.effectId);
   }
-  return {
-    success: false,
-    exitCode: result.exitCode,
-    stdout: result.stdout,
-    stderr: result.stderr,
-    error: result.timedOut
-      ? `Shell command timed out`
-      : `Shell command exited with code ${result.exitCode}; expected ${expectedExitCode}`,
-    timedOut: result.timedOut,
-    stdoutTruncated: result.stdoutTruncated,
-    stderrTruncated: result.stderrTruncated,
-  };
+  const engineOwnedPaths = [
+    effectArtifactPath(runDir, action.effectId, "output.json"),
+    effectArtifactPath(runDir, action.effectId, "result.json"),
+  ];
+  if (engineOwnedPaths.some((candidate) => path.resolve(candidate) === path.resolve(outputPath))) return null;
+  return { path: outputPath, before: await shellOutputFingerprint(outputPath, action.effectId) };
+}
+
+async function shellOutputFingerprint(filePath: string, effectId: string): Promise<string | null> {
+  let bytes: Buffer;
+  let stat;
+  try {
+    [bytes, stat] = await Promise.all([fs.readFile(filePath), fs.stat(filePath)]);
+  } catch (error) {
+    if (isNotFound(error)) return null;
+    throw error;
+  }
+  if (bytes.length > MAX_CAPTURE_BYTES) {
+    throw new DriverError(`Shell output JSON for effect ${effectId} exceeds ${MAX_CAPTURE_BYTES} bytes`, effectId);
+  }
+  return `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${sha256(bytes)}`;
+}
+
+async function shellResultValue(
+  action: EffectAction,
+  result: ShellExecutionResult,
+  commandOutput: ShellCommandOutput | null,
+): Promise<unknown> {
+  if (commandOutput) {
+    const after = await shellOutputFingerprint(commandOutput.path, action.effectId);
+    if (after === null || after === commandOutput.before) {
+      throw new DriverError(
+        `Shell output JSON for effect ${action.effectId} was not created or updated`,
+        action.effectId,
+      );
+    }
+    return JSON.parse(await fs.readFile(commandOutput.path, "utf8"));
+  }
+
+  if (typeof readObject(action.taskDef?.io)?.outputJsonPath === "string") {
+    try {
+      return JSON.parse(result.stdout);
+    } catch {
+      // JSON destinations can still carry scalar command output.
+    }
+  }
+  return result.stdout;
 }
 
 async function hasMatchingCommittedArtifact(runDir: string, checkpoint: ExecutionCheckpoint): Promise<boolean> {
