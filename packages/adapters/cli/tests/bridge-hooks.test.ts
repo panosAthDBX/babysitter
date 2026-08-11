@@ -548,8 +548,7 @@ describe('bridge flag validation in launch command', () => {
     );
 
     // If validation passed, the PTY mock was spawned
-    await new Promise(r => setTimeout(r, 100));
-    expect(ptySpawnMock).toHaveBeenCalled();
+    await vi.waitFor(() => expect(ptySpawnMock).toHaveBeenCalled(), { timeout: 1_000 });
 
     // Clean up: trigger PTY exit so promise resolves
     // (the PTY mock from this file doesn't store callbacks, so we can't trigger exit easily;

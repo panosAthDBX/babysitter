@@ -249,11 +249,10 @@ fs.writeFileSync(p.join(dest,"inputs.json"),JSON.stringify({traceId,outputDir:p.
   }
 
   const processMode = options.env['LIVE_STACK_PROCESS_MODE'] ?? 'predefined';
-  // In the published-packages workflow the babysitter-sdk + hooks-adapter CLIs
-  // are installed globally from npm; re-installing them from local (unbuilt)
-  // source clobbers the global `babysitter` bin with a dangling dist/ symlink
-  // → `spawn babysitter ENOENT` at harness:install-plugin. Skip the local
-  // source installs in that mode and rely on the published globals.
+  // The SDK package owns the `babysitter` and `adapters-hooks` global bins and
+  // already depends on the hooks CLI package. Installing the hooks CLI again
+  // races npm's global bin linker and fails with EEXIST.
+  // Published-package lanes rely on their preinstalled global SDK.
   const usePublishedPackages = options.env['LIVE_STACK_PUBLISHED_PACKAGES'] === '1';
   const localSdkInstallCommands = usePublishedPackages ? [] : [
     commandExecution(commandEnv, 'LIVE_STACK_NPM_BIN', 'npm', ['install', '--global', './packages/babysitter-sdk'], options.cwd, SETUP_TIMEOUT_MS),
