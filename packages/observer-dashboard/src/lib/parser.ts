@@ -1,4 +1,5 @@
-import { promises as fs } from "fs";
+import { constants as fsConstants, promises as fs } from "fs";
+import { createHash } from "crypto";
 import path from "path";
 
 /** Return true when err represents a "file/directory not found" filesystem error. */
@@ -19,6 +20,7 @@ import type {
   EffectRequestedPayload,
   EffectResolvedPayload,
   RunCreatedPayload,
+  BabysitterCheckpoint,
 } from "@/types";
 import { getConfig } from "@/lib/config-loader";
 
@@ -122,6 +124,269 @@ async function readTextSafe(filePath: string): Promise<string | undefined> {
     }
     return undefined;
   }
+}
+
+const OMP_DRIVER_SCHEMA_VERSION = "2026.07.omp-driver-v1";
+const MAX_DURABLE_ARTIFACT_BYTES = 1024 * 1024;
+const SAFE_AGENT_REF = /^agent:\/\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})$/;
+const SAFE_EFFECT_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+function isAllocatedOwnerName(agentId: string, requestedName: string): boolean {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(agentId)) return false;
+  if (agentId === requestedName) return true;
+  if (!agentId.startsWith(`${requestedName}-`)) return false;
+  const suffix = agentId.slice(requestedName.length);
+  return /^-[2-9]\d*$/.test(suffix);
+}
+
+type SecureReadFailure = "missing" | "unsafe" | "unstable" | "oversized" | "unreadable";
+
+interface SecureRead {
+  bytes?: Buffer;
+  failure?: SecureReadFailure;
+}
+
+interface ArtifactRead {
+  exists: boolean;
+  malformed: boolean;
+  value?: Record<string, unknown>;
+}
+
+function isPathWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+async function classifyTaskDirectory(runRoot: string, taskDir: string): Promise<"safe" | "missing" | "unsafe"> {
+  try {
+    const realRunRoot = await fs.realpath(runRoot);
+    const tasksDir = path.join(runRoot, "tasks");
+    const realTasksDir = await fs.realpath(tasksDir);
+    if (realTasksDir !== path.join(realRunRoot, "tasks")) return "unsafe";
+    const realTaskDir = await fs.realpath(taskDir);
+    if (realTaskDir !== path.join(realTasksDir, path.basename(taskDir))) return "unsafe";
+    const taskStat = await fs.lstat(taskDir);
+    return taskStat.isDirectory() && !taskStat.isSymbolicLink() ? "safe" : "unsafe";
+  } catch (error) {
+    return isNotFoundError(error) ? "missing" : "unsafe";
+  }
+}
+
+async function readSecureRegularFile(
+  runRoot: string,
+  filePath: string,
+  maxBytes = MAX_DURABLE_ARTIFACT_BYTES,
+): Promise<SecureRead> {
+  const lexicalRoot = path.resolve(runRoot);
+  const lexicalPath = path.resolve(filePath);
+  if (!isPathWithin(lexicalRoot, lexicalPath)) return { failure: "unsafe" };
+
+  let handle;
+  try {
+    handle = await fs.open(lexicalPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  } catch (error) {
+    if (isNotFoundError(error)) return { failure: "missing" };
+    return { failure: "unsafe" };
+  }
+
+  try {
+    const before = await handle.stat();
+    if (!before.isFile() || before.nlink !== 1) return { failure: "unsafe" };
+    if (before.size > maxBytes) return { failure: "oversized" };
+
+    const buffer = Buffer.allocUnsafe(maxBytes + 1);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    if (offset > maxBytes) return { failure: "oversized" };
+
+    const after = await handle.stat();
+    const current = await fs.lstat(lexicalPath);
+    const realRunRoot = await fs.realpath(lexicalRoot);
+    const realPath = await fs.realpath(lexicalPath);
+    const expectedRealPath = path.join(realRunRoot, path.relative(lexicalRoot, lexicalPath));
+    if (
+      realPath !== expectedRealPath
+      || !isPathWithin(realRunRoot, realPath)
+      || current.isSymbolicLink()
+      || !current.isFile()
+      || current.nlink !== 1
+      || before.dev !== after.dev
+      || before.ino !== after.ino
+      || before.size !== after.size
+      || before.mtimeMs !== after.mtimeMs
+      || before.ctimeMs !== after.ctimeMs
+      || current.dev !== after.dev
+      || current.ino !== after.ino
+      || current.size !== after.size
+      || current.mtimeMs !== after.mtimeMs
+      || current.ctimeMs !== after.ctimeMs
+    ) {
+      return { failure: "unstable" };
+    }
+    return { bytes: buffer.subarray(0, offset) };
+  } catch {
+    return { failure: "unreadable" };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readArtifact(runRoot: string, filePath: string): Promise<ArtifactRead> {
+  const read = await readSecureRegularFile(runRoot, filePath);
+  if (read.failure === "missing") return { exists: false, malformed: false };
+  if (!read.bytes) return { exists: true, malformed: true };
+  try {
+    const parsed = JSON.parse(read.bytes.toString("utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { exists: true, malformed: true };
+    }
+    return { exists: true, malformed: false, value: parsed as Record<string, unknown> };
+  } catch {
+    return { exists: true, malformed: true };
+  }
+}
+
+function checkpointAttention(attention: string): BabysitterCheckpoint {
+  return { state: "failed/attention", attention };
+}
+
+export async function parseBabysitterCheckpoint(
+  runPath: string,
+  task: Pick<TaskEffect, "effectId" | "invocationKey" | "kind" | "status">,
+): Promise<BabysitterCheckpoint> {
+  if (task.status !== "requested") return { state: "committed" };
+  if (!SAFE_EFFECT_ID.test(task.effectId)) {
+    return checkpointAttention("Unsafe effect checkpoint identity");
+  }
+
+  const runRoot = path.resolve(runPath);
+  const taskDir = path.resolve(runRoot, "tasks", task.effectId);
+  if (!taskDir.startsWith(`${runRoot}${path.sep}`)) {
+    return checkpointAttention("Unsafe effect checkpoint path");
+  }
+  const taskDirectoryState = await classifyTaskDirectory(runRoot, taskDir);
+  if (taskDirectoryState === "unsafe") {
+    return checkpointAttention("Unsafe effect checkpoint path");
+  }
+  if (taskDirectoryState === "missing") return { state: "requested" };
+  const executionArtifact = await readArtifact(runRoot, path.join(taskDir, "execution.json"));
+  if (!executionArtifact.exists) return { state: "requested" };
+  if (executionArtifact.malformed || !executionArtifact.value) {
+    return checkpointAttention("Malformed execution checkpoint");
+  }
+
+  const checkpoint = executionArtifact.value;
+  const expectedKind = task.kind === "skill" ? "agent" : task.kind;
+  if (
+    checkpoint.schemaVersion !== OMP_DRIVER_SCHEMA_VERSION ||
+    checkpoint.effectId !== task.effectId ||
+    checkpoint.invocationKey !== task.invocationKey ||
+    checkpoint.kind !== expectedKind ||
+    (checkpoint.state !== "in_progress" && checkpoint.state !== "completed")
+  ) {
+    return checkpointAttention("Execution checkpoint identity or version mismatch");
+  }
+
+  const attempt = typeof checkpoint.attempt === "number" && Number.isInteger(checkpoint.attempt) && checkpoint.attempt > 0
+    ? checkpoint.attempt
+    : undefined;
+  if (checkpoint.state === "completed") {
+    const expectedOutputRef = `tasks/${task.effectId}/output.json`;
+    const outputPath = path.resolve(runRoot, expectedOutputRef);
+    if (!outputPath.startsWith(`${runRoot}${path.sep}`)) {
+      return checkpointAttention("Unsafe durable output path");
+    }
+    if (checkpoint.outputRef !== expectedOutputRef) {
+      return checkpointAttention("Durable output checkpoint is incomplete");
+    }
+    if (typeof checkpoint.outputSha256 !== "string" || !/^[a-f0-9]{64}$/.test(checkpoint.outputSha256)) {
+      return checkpointAttention(
+        checkpoint.outputSha256 === undefined
+          ? "Durable output checksum is missing"
+          : "Durable output checksum is malformed",
+      );
+    }
+    if (
+      checkpoint.kind === "agent"
+      && (
+        typeof checkpoint.authenticatedOutputSha256 !== "string"
+        || !/^[a-f0-9]{64}$/.test(checkpoint.authenticatedOutputSha256)
+      )
+    ) {
+      return checkpointAttention(
+        checkpoint.authenticatedOutputSha256 === undefined
+          ? "Authenticated agent output checksum is missing"
+          : "Authenticated agent output checksum is malformed",
+      );
+    }
+    const outputRead = await readSecureRegularFile(runRoot, outputPath);
+    if (!outputRead.bytes) {
+      if (outputRead.failure === "oversized") {
+        return checkpointAttention(`Durable output exceeds ${MAX_DURABLE_ARTIFACT_BYTES} bytes`);
+      }
+      if (outputRead.failure === "unsafe" || outputRead.failure === "unstable") {
+        return checkpointAttention("Durable output checkpoint is unsafe or unstable");
+      }
+      return checkpointAttention("Durable output checkpoint is incomplete");
+    }
+    const actualSha256 = createHash("sha256").update(outputRead.bytes).digest("hex");
+    if (actualSha256 !== checkpoint.outputSha256) {
+      return checkpointAttention("Durable output checksum mismatch");
+    }
+    if (checkpoint.kind === "agent" && checkpoint.authenticatedOutputSha256 !== actualSha256) {
+      return checkpointAttention("Authenticated agent output checksum mismatch");
+    }
+    return { state: "durable-output-uncommitted", ...(attempt ? { attempt } : {}) };
+  }
+
+  if (checkpoint.kind === "shell") return { state: "shell-running" };
+  if (checkpoint.kind !== "agent") return checkpointAttention("Unsupported checkpoint kind");
+
+  const attemptState = checkpoint.attemptState;
+  if (attemptState === undefined || attemptState === "prepared" || attemptState === "retry_authorized") {
+    return { state: "requested", ...(attempt ? { attempt } : {}) };
+  }
+  if (attemptState === "failed" || attemptState === "aborted" || attemptState === "cancelled") {
+    return checkpointAttention(`Agent attempt ${attemptState}`);
+  }
+
+  const ownerArtifact = await readArtifact(runRoot, path.join(taskDir, "agent-owner.json"));
+  if (!ownerArtifact.exists || ownerArtifact.malformed || !ownerArtifact.value) {
+    return checkpointAttention("Owning agent checkpoint is missing or malformed");
+  }
+  const owner = ownerArtifact.value;
+  if (
+    owner.schemaVersion !== OMP_DRIVER_SCHEMA_VERSION ||
+    owner.effectId !== task.effectId ||
+    owner.invocationKey !== task.invocationKey ||
+    owner.ownerName !== checkpoint.ownerName ||
+    owner.dispatchToken !== checkpoint.dispatchToken ||
+    owner.attempt !== (attempt ?? 1) ||
+    typeof owner.toolCallId !== "string" ||
+    owner.toolCallId.length === 0
+  ) {
+    return checkpointAttention("Owning agent identity mismatch");
+  }
+
+  let agentRef: `agent://${string}` | undefined;
+  if (owner.agentRef !== undefined) {
+    const match = typeof owner.agentRef === "string" ? SAFE_AGENT_REF.exec(owner.agentRef) : null;
+    if (!match || !isAllocatedOwnerName(match[1], owner.ownerName as string)) {
+      return checkpointAttention("Forged or non-owner agent reference");
+    }
+    agentRef = owner.agentRef as `agent://${string}`;
+  }
+
+  if (attemptState === "awaiting_late_owner") {
+    return { state: "awaiting-late-owner", ...(attempt ? { attempt } : {}), ...(agentRef ? { agentRef } : {}) };
+  }
+  if (attemptState === "claimed") {
+    return { state: "agent-owned", ...(attempt ? { attempt } : {}), ...(agentRef ? { agentRef } : {}) };
+  }
+  return checkpointAttention("Unknown agent checkpoint state");
 }
 
 /** Maximum concurrent filesystem operations to prevent file descriptor exhaustion. */
@@ -397,6 +662,15 @@ export async function parseRunDir(
   }
 
   const tasks = Array.from(taskMap.values());
+  const checkpointResults = await batchAllSettled(
+    tasks.map((task) => () => parseBabysitterCheckpoint(runPath, task))
+  );
+  for (let index = 0; index < tasks.length; index += 1) {
+    const checkpointResult = checkpointResults[index];
+    if (checkpointResult.status === "fulfilled") {
+      tasks[index].babysitterCheckpoint = checkpointResult.value;
+    }
+  }
   const completedTasks = tasks.filter((t) => t.status === "resolved").length;
   const failedTasks = tasks.filter((t) => t.status === "error").length;
 
@@ -594,7 +868,7 @@ export async function parseTaskDetail(
     ? (result.status === "error")
     : (resolvedPayload?.status === "error");
 
-  return {
+  const detail: TaskDetail = {
     effectId,
     kind,
     title: (taskDef?.title as string) || effectId,
@@ -616,6 +890,8 @@ export async function parseTaskDetail(
     breakpoint: breakpointPayload,
     breakpointQuestion: breakpointPayload?.question,
   };
+  detail.babysitterCheckpoint = await parseBabysitterCheckpoint(runPath, detail);
+  return detail;
 }
 
 export async function getRunDigest(runPath: string): Promise<RunDigest> {
