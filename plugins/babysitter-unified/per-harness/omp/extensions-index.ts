@@ -211,7 +211,7 @@ export default function activate(pi: ExtensionAPI): void {
           ? progressText(latestProgress)
           : `Babysitter ${path.basename(runDir)} · ${phases[0]?.tasks.length ?? 0} effects`;
         activeContext?.ui.setStatus(PROJECTION_NAMESPACE, fallback);
-        activeContext?.ui.setWidget(PROJECTION_NAMESPACE, [fallback]);
+        activeContext?.ui.setWidget(PROJECTION_NAMESPACE, undefined);
         if (!projectionWarningReported) {
           projectionWarningReported = true;
           pi.logger.warn("Babysitter todo projection is unavailable in this OMP version", {
@@ -249,7 +249,7 @@ export default function activate(pi: ExtensionAPI): void {
     const text = progressText(progress);
     try {
       activeContext?.ui.setStatus(PROJECTION_NAMESPACE, text);
-      activeContext?.ui.setWidget(PROJECTION_NAMESPACE, progress.stage === "failure" ? undefined : [text]);
+      activeContext?.ui.setWidget(PROJECTION_NAMESPACE, undefined);
     } catch (error) {
       reportProjectionFailure(error, "operation_flush");
     }

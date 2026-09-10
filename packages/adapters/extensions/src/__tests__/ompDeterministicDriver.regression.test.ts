@@ -720,7 +720,7 @@ describe('OMP deterministic driver regressions (#1578, #1579)', () => {
     expect(process.cwd()).not.toBe('/workspace-drive');
     expect(runIterateCwd).toBe('/workspace-drive');
     expect(uiStatusWrites.some(([, value]) => String(value).includes('waiting'))).toBe(true);
-    expect(uiWidgetWrites.some(([, value]) => String(value).includes('waiting'))).toBe(true);
+    expect(uiWidgetWrites.some(([, value]) => value !== undefined)).toBe(false);
     expect(projectionWrites.some(([namespace]) => namespace === 'babysitter')).toBe(true);
     expect(String(uiStatusWrites.at(-1)?.[1])).toContain('waiting');
     const foreignDrive = await driveTool.execute(
@@ -784,6 +784,7 @@ describe('OMP deterministic driver regressions (#1578, #1579)', () => {
     for (const secret of progressSecrets) expect(displayedProgress).not.toContain(secret);
     expect(uiStatusWrites.length).toBeGreaterThan(pendingShellStatusBoundary);
     expect(uiWidgetWrites.length).toBeGreaterThan(pendingShellWidgetBoundary);
+    expect(uiWidgetWrites.slice(pendingShellWidgetBoundary).every(([, value]) => value === undefined)).toBe(true);
     projectionWriteObserved = undefined;
     pendingShellAbort.abort(new DOMException('test abort', 'AbortError'));
     await expect(pendingShellDrive).resolves.toMatchObject({ isError: true });
@@ -1203,7 +1204,7 @@ describe('OMP deterministic driver regressions (#1578, #1579)', () => {
     ]);
     expect(projectionWrites.at(-1)).toEqual(['babysitter', undefined]);
     expect(String(uiStatusWrites.at(-1)?.[1])).toContain('waiting');
-    expect(String(uiWidgetWrites.at(-1)?.[1])).toContain('waiting');
+    expect(uiWidgetWrites.at(-1)).toEqual(['babysitter', undefined]);
 
     expect(warnings.map(([, details]) => details.category)).toEqual([
       'session_state_execution_failed',
